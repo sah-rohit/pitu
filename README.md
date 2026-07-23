@@ -5,6 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#cross-platform)
+[![Troubleshooting](https://img.shields.io/badge/docs-Troubleshooting%20Guide-green.svg)](TROUBLESHOOTING.md)
 
 ---
 
@@ -38,20 +39,31 @@ Opening heavy GUI editors (Photoshop, GIMP, Figma) for batch cropping, format co
 
 ---
 
-## 🛠️ Installation
+## 🛠️ Cross-Platform Installation & Setup
 
-### Quick Launcher Setup (Recommended)
-```bash
-./install.sh
+### 🪟 Windows Setup
+Open PowerShell and run:
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force; .\install.ps1
 ```
-This builds the release binary and installs `pitu` to `~/.local/bin/pitu`. You can then launch `pitu` from any terminal tab!
+*Note: If `pitu` is not recognized after install, see [Windows PATH Setup in Troubleshooting Guide](TROUBLESHOOTING.md#windows-setup-powershell--command-prompt).*
 
-### Build from Source
+### 🍎 macOS Setup
 ```bash
-git clone https://github.com/sah-rohit/pitu.git
-cd pitu
-cargo build --release
+chmod +x install.sh && ./install.sh
 ```
+
+### 🐧 Linux Setup (Ubuntu / Fedora / Arch)
+```bash
+chmod +x install.sh && ./install.sh
+```
+
+### 📦 Install via Cargo (All OS)
+```bash
+cargo install --path .
+```
+
+> 🛠️ **Encountering an issue?** See our dedicated [TROUBLESHOOTING.md](TROUBLESHOOTING.md) guide for solutions to common PATH issues, execution policies, and terminal color configuration.
 
 ---
 
