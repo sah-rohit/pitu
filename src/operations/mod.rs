@@ -97,6 +97,10 @@ impl Pipeline {
                 warmth: None,
                 vignette: None,
                 structure: None,
+                hdr_scape: false,
+                glamour_glow: false,
+                haze_removal: false,
+                frame_width: None,
             });
         }
 

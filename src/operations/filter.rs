@@ -11,6 +11,10 @@ pub struct FilterOptions {
     pub warmth: Option<f32>,
     pub vignette: Option<f32>,
     pub structure: Option<f32>,
+    pub hdr_scape: bool,
+    pub glamour_glow: bool,
+    pub haze_removal: bool,
+    pub frame_width: Option<u32>,
 }
 
 impl Default for FilterOptions {
@@ -26,6 +30,10 @@ impl Default for FilterOptions {
             warmth: None,
             vignette: None,
             structure: None,
+            hdr_scape: false,
+            glamour_glow: false,
+            haze_removal: false,
+            frame_width: None,
         }
     }
 }
@@ -80,6 +88,24 @@ pub fn apply_filters(img: &DynamicImage, opts: &FilterOptions) -> DynamicImage {
     if let Some(st) = opts.structure {
         if st > 0.05 {
             result = apply_structure(&result, st);
+        }
+    }
+
+    if opts.hdr_scape {
+        result = apply_hdr_scape(&result);
+    }
+
+    if opts.glamour_glow {
+        result = apply_glamour_glow(&result);
+    }
+
+    if opts.haze_removal {
+        result = apply_haze_removal(&result);
+    }
+
+    if let Some(border) = opts.frame_width {
+        if border > 0 {
+            result = apply_frame(&result, border);
         }
     }
 
@@ -143,4 +169,98 @@ fn apply_vignette(img: &DynamicImage, strength: f32) -> DynamicImage {
 
 fn apply_structure(img: &DynamicImage, strength: f32) -> DynamicImage {
     img.unsharpen(strength * 2.0, 1)
+}
+
+/// HDR Scape: boost local contrast in shadows/midtones/highlights
+fn apply_hdr_scape(img: &DynamicImage) -> DynamicImage {
+    let blurred = img.blur(8.0);
+    let rgba_orig = img.to_rgba8();
+    let rgba_blur = blurred.to_rgba8();
+    let (w, h) = rgba_orig.dimensions();
+    let mut out = ImageBuffer::new(w, h);
+
+    for y in 0..h {
+        for x in 0..w {
+            let po = rgba_orig.get_pixel(x, y);
+            let pb = rgba_blur.get_pixel(x, y);
+            let mut channels = [0u8; 4];
+            for c in 0..3 {
+                let orig = po[c] as f32;
+                let blur = pb[c] as f32;
+                let detail = orig - blur;
+                channels[c] = (orig + detail * 0.6).clamp(0.0, 255.0) as u8;
+            }
+            channels[3] = po[3];
+            out.put_pixel(x, y, Rgba(channels));
+        }
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+/// Glamour Glow: soft diffused highlight glow for portraits
+fn apply_glamour_glow(img: &DynamicImage) -> DynamicImage {
+    let blurred = img.blur(6.0).brighten(15);
+    let rgba_orig = img.to_rgba8();
+    let rgba_glow = blurred.to_rgba8();
+    let (w, h) = rgba_orig.dimensions();
+    let mut out = ImageBuffer::new(w, h);
+
+    for y in 0..h {
+        for x in 0..w {
+            let po = rgba_orig.get_pixel(x, y);
+            let pg = rgba_glow.get_pixel(x, y);
+            let mut channels = [0u8; 4];
+            for c in 0..3 {
+                let base = po[c] as f32 / 255.0;
+                let glow = pg[c] as f32 / 255.0;
+                // Screen blend mode
+                let blended = 1.0 - (1.0 - base) * (1.0 - glow * 0.4);
+                channels[c] = (blended * 255.0).clamp(0.0, 255.0) as u8;
+            }
+            channels[3] = po[3];
+            out.put_pixel(x, y, Rgba(channels));
+        }
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+/// Haze Removal: increase local contrast and reduce atmospheric haze
+fn apply_haze_removal(img: &DynamicImage) -> DynamicImage {
+    let mut result = img.adjust_contrast(20.0);
+    let rgba = result.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut out = ImageBuffer::new(w, h);
+
+    // Simple dark channel prior approximation
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y);
+            let min_ch = p[0].min(p[1]).min(p[2]) as f32;
+            let haze_factor = (min_ch / 255.0) * 0.3;
+            let mut channels = [0u8; 4];
+            for c in 0..3 {
+                let val = p[c] as f32;
+                channels[c] = ((val - haze_factor * 60.0) / (1.0 - haze_factor * 0.3)).clamp(0.0, 255.0) as u8;
+            }
+            channels[3] = p[3];
+            out.put_pixel(x, y, Rgba(channels));
+        }
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+/// Add a solid-color border frame around the image
+fn apply_frame(img: &DynamicImage, border: u32) -> DynamicImage {
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let new_w = w + border * 2;
+    let new_h = h + border * 2;
+    let mut out = ImageBuffer::from_pixel(new_w, new_h, Rgba([20, 20, 20, 255]));
+
+    for y in 0..h {
+        for x in 0..w {
+            out.put_pixel(x + border, y + border, *rgba.get_pixel(x, y));
+        }
+    }
+    DynamicImage::ImageRgba8(out)
 }
