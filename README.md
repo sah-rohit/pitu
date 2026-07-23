@@ -39,22 +39,40 @@ Opening heavy GUI editors (Photoshop, GIMP, Figma) for batch cropping, format co
 
 ---
 
+## 📋 Prerequisites
+
+Before installing `pitu`, ensure your system meets the OS-specific requirements below:
+
+| Requirement | Windows | macOS | Linux |
+| :--- | :--- | :--- | :--- |
+| **Rust Toolchain** | [Rustup 1.75+](https://rustup.rs) | [Rustup 1.75+](https://rustup.rs) | [Rustup 1.75+](https://rustup.rs) |
+| **Build Compiler** | MSVC C++ Build Tools | Xcode Command Line Tools (`xcode-select --install`) | `build-essential` / `base-devel` |
+| **Shell / Terminal** | PowerShell 5.1+ / Windows Terminal | Terminal.app / iTerm2 | Bash / Zsh |
+| **GUI Folder Launcher** | Windows Explorer (Native) | Finder (`open` native) | `xdg-utils` (`xdg-open`) |
+
+---
+
 ## 🛠️ Cross-Platform Installation & Setup
 
-### 🪟 Windows Setup
+### 🍎 macOS Setup (Terminal / iTerm2)
+```bash
+# 1. Install Xcode Command Line Tools (If not already installed)
+xcode-select --install
+
+# 2. Run automated macOS installer
+chmod +x install.sh && ./install.sh
+```
+
+### 🪟 Windows Setup (PowerShell)
 Open PowerShell and run:
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force; .\install.ps1
 ```
 *Note: If `pitu` is not recognized after install, see [Windows PATH Setup in Troubleshooting Guide](TROUBLESHOOTING.md#windows-setup-powershell--command-prompt).*
 
-### 🍎 macOS Setup
-```bash
-chmod +x install.sh && ./install.sh
-```
-
 ### 🐧 Linux Setup (Ubuntu / Fedora / Arch)
 ```bash
+# Ubuntu/Debian GUI launcher dependency: sudo apt install xdg-utils
 chmod +x install.sh && ./install.sh
 ```
 
