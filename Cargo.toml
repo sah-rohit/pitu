@@ -27,6 +27,8 @@ env_logger = "0.11"
 log = "0.4"
 tempfile = "3.10"
 base64 = "0.22"
+eframe = "0.27"
+rfd = "0.14"
 
 [[bin]]
 name = "pitu"

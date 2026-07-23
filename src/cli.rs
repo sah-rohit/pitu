@@ -77,6 +77,10 @@ pub struct Cli {
     /// Overwrite existing output files without prompting
     #[arg(long = "overwrite", global = true, default_value_t = true)]
     pub overwrite: bool,
+
+    /// Launch the Native Desktop Graphical User Interface (GUI) Workbench
+    #[arg(long = "gui", global = true, default_value_t = false)]
+    pub gui: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -133,14 +137,17 @@ pub enum Commands {
         message: String,
     },
 
-    /// View version commit history timeline for an image
+    /// Show version snapshot history timeline for an image
     History {
         /// Target image path
         #[arg(required = true)]
         file: String,
     },
 
-    /// Launch interactive drag-and-drop CLI prompt wizard
+    /// Launch the Native Desktop Graphical User Interface (GUI) Workbench
+    Gui,
+
+    /// Launch interactive step-by-step wizard dashboard
     Interactive,
 
     /// Show detailed program information, format support, and algorithm details

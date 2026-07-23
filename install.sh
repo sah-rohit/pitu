@@ -14,7 +14,8 @@ mkdir -p "$INSTALL_DIR"
 if command -v cargo >/dev/null 2>&1; then
     echo "⚡ Compiling release binary with Cargo..."
     cargo build --release
-    cp target/release/pitu "$INSTALL_DIR/pitu"
+    rm -f "$INSTALL_DIR/pitu" || true
+    cp target/release/pitu "$INSTALL_DIR/pitu" || install -m 755 target/release/pitu "$INSTALL_DIR/pitu"
     chmod +x "$INSTALL_DIR/pitu"
 else
     echo "❌ Error: Cargo is required to build pitu. Please install Rust from https://rustup.rs"

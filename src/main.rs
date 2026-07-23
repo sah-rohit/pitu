@@ -1,6 +1,7 @@
 mod batch;
 mod cli;
 mod config;
+mod gui;
 mod interactive;
 mod manual;
 mod operations;
@@ -13,6 +14,7 @@ use batch::{execute_batch, expand_input_paths, BatchOptions};
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands, ProcessArgs};
 use config::{create_default_config_file, load_config};
+use gui::run_gui;
 use manual::{install_global_launcher, show_info_screen, show_manual_screen};
 use operations::Pipeline;
 use std::io;
@@ -25,6 +27,11 @@ use versioning::{create_snapshot, list_history};
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Check if --gui flag or `pitu gui` subcommand was passed
+    if cli.gui || matches!(cli.command, Some(Commands::Gui)) {
+        return run_gui();
+    }
 
     // Check subcommands that exit immediately
     match cli.command {

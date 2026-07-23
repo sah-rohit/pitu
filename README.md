@@ -27,6 +27,8 @@ Opening heavy GUI editors (Photoshop, GIMP, Figma) for batch cropping, format co
 
 ### 🌟 Key Highlights
 
+- 🖥️ **Dual-Mode CLI + Native Desktop GUI Workbench**: Launch headless CLI batch processing, terminal TUI, or modern Native Desktop GUI app window (`pitu gui` / `pitu --gui`).
+- 📥 **Drag-and-Drop Visual Canvas**: Drag image files/folders straight into the GUI window or TUI prompt.
 - 🧠 **Smart Entropy Cropping**: Content-aware cropping using Sobel edge detection & 2D local Shannon entropy ($O(1)$ integral image SAT) to keep the visually interesting focal point—not just the geometric center.
 - ✨ **Quality Enhancement Engine**: Unsharp mask edge sharpening, contrast normalization, and color pop.
 - 📉 **Target File Size Compression**: Binary search quality optimizer (`--max-size 500KB` / `--max-size 2MB`) fitting images under exact byte limits for web uploads.
@@ -87,7 +89,13 @@ cargo install --path .
 
 ## 🚀 Quick Usage Examples
 
-### 1. Launch Interactive Drag & Drop Workbench
+### 1. Launch Native Desktop GUI Workbench
+```bash
+pitu gui
+# or: pitu --gui
+```
+
+### 2. Launch Interactive Terminal Workbench
 ```bash
 pitu
 ```
