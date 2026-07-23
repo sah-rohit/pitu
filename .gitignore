@@ -1,0 +1,24 @@
+# Cargo / Rust Build Artifacts
+/target/
+target/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Test & Local Outputs
+/output/
+output/
+sample_*.jpg
+test_*.webp
+*.tmp
+
+# Pitu Local History Cache
+.pitu/
+
+# Environment / IDE Configs
+.idea/
+.vscode/
+*.rs.bk
