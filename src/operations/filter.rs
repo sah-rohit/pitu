@@ -8,6 +8,9 @@ pub struct FilterOptions {
     pub contrast: Option<f32>,
     pub blur: Option<f32>,
     pub sharpen: Option<f32>,
+    pub warmth: Option<f32>,
+    pub vignette: Option<f32>,
+    pub structure: Option<f32>,
 }
 
 impl Default for FilterOptions {
@@ -20,6 +23,9 @@ impl Default for FilterOptions {
             contrast: None,
             blur: None,
             sharpen: None,
+            warmth: None,
+            vignette: None,
+            structure: None,
         }
     }
 }
@@ -59,6 +65,24 @@ pub fn apply_filters(img: &DynamicImage, opts: &FilterOptions) -> DynamicImage {
         }
     }
 
+    if let Some(w) = opts.warmth {
+        if w.abs() > 0.05 {
+            result = apply_warmth(&result, w);
+        }
+    }
+
+    if let Some(v) = opts.vignette {
+        if v > 0.05 {
+            result = apply_vignette(&result, v);
+        }
+    }
+
+    if let Some(st) = opts.structure {
+        if st > 0.05 {
+            result = apply_structure(&result, st);
+        }
+    }
+
     result
 }
 
@@ -83,4 +107,40 @@ fn apply_sepia(img: &DynamicImage) -> DynamicImage {
     }
 
     DynamicImage::ImageRgba8(out)
+}
+
+fn apply_warmth(img: &DynamicImage, warmth: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    let shift_r = warmth * 20.0;
+    let shift_b = -warmth * 20.0;
+
+    for p in rgba.pixels_mut() {
+        p[0] = (p[0] as f32 + shift_r).clamp(0.0, 255.0) as u8;
+        p[2] = (p[2] as f32 + shift_b).clamp(0.0, 255.0) as u8;
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_vignette(img: &DynamicImage, strength: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    let (w, h) = (rgba.width() as f32, rgba.height() as f32);
+    let cx = w / 2.0;
+    let cy = h / 2.0;
+    let max_dist = (cx * cx + cy * cy).sqrt();
+
+    for (x, y, p) in rgba.enumerate_pixels_mut() {
+        let dx = x as f32 - cx;
+        let dy = y as f32 - cy;
+        let dist = (dx * dx + dy * dy).sqrt() / max_dist;
+        let factor = (1.0 - (dist * strength).powf(1.8)).clamp(0.0, 1.0);
+
+        p[0] = (p[0] as f32 * factor) as u8;
+        p[1] = (p[1] as f32 * factor) as u8;
+        p[2] = (p[2] as f32 * factor) as u8;
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_structure(img: &DynamicImage, strength: f32) -> DynamicImage {
+    img.unsharpen(strength * 2.0, 1)
 }

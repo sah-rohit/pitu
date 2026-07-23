@@ -22,7 +22,7 @@ enum GuiTab {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SubTab {
-    Canvas,
+    TuneImage,
     SmartCrop,
     Enhance,
     Compress,
@@ -40,7 +40,12 @@ pub struct PituGuiApp {
     processed_texture: Option<egui::TextureHandle>,
     edit_session: Option<EditSession>,
 
-    // Live Controls
+    // Snapseed & Photoshop Tune Controls
+    warmth: f32,
+    vignette: f32,
+    structure: f32,
+
+    // Live Smart Crop / Enhance / Filter Controls
     smart_crop: bool,
     crop_aspect: String,
     enhance: bool,
@@ -50,17 +55,21 @@ pub struct PituGuiApp {
     enable_watermark: bool,
     watermark_text: String,
     grayscale: bool,
+    sepia: bool,
+    invert: bool,
     contrast: f32,
 
-    // Statistics
+    // Statistics & Histogram
     orig_bytes: u64,
     proc_bytes: u64,
     orig_w: u32,
     orig_h: u32,
     proc_w: u32,
     proc_h: u32,
+    histogram_rgb: [u32; 3],
 
-    // Visual Split Slider
+    // Side-by-Side Visual Split Slider
+    show_split_comparison: bool,
     split_ratio: f32,
     status_message: String,
 }
@@ -69,13 +78,17 @@ impl Default for PituGuiApp {
     fn default() -> Self {
         Self {
             active_tab: GuiTab::Workbench,
-            active_sub_tab: SubTab::Canvas,
+            active_sub_tab: SubTab::TuneImage,
 
             image_path: None,
             original_image: None,
             texture: None,
             processed_texture: None,
             edit_session: None,
+
+            warmth: 0.0,
+            vignette: 0.0,
+            structure: 0.0,
 
             smart_crop: false,
             crop_aspect: "16:9".to_string(),
@@ -86,6 +99,8 @@ impl Default for PituGuiApp {
             enable_watermark: false,
             watermark_text: "PITU WORKBENCH".to_string(),
             grayscale: false,
+            sepia: false,
+            invert: false,
             contrast: 1.0,
 
             orig_bytes: 0,
@@ -94,7 +109,9 @@ impl Default for PituGuiApp {
             orig_h: 0,
             proc_w: 0,
             proc_h: 0,
+            histogram_rgb: [120, 150, 180],
 
+            show_split_comparison: false,
             split_ratio: 0.5,
             status_message: "Ready. Drag & drop an image or click 'Open Image' to edit.".to_string(),
         }
@@ -115,8 +132,11 @@ impl PituGuiApp {
                 let img = res.image;
                 self.orig_w = img.width();
                 self.orig_h = img.height();
+                self.compute_histogram(&img);
 
-                let color_image = image_to_egui_color_image(&img);
+                // Crash-free GPU texture thumbnail generation (max 1920x1080)
+                let preview_img = downsample_for_preview(&img);
+                let color_image = image_to_egui_color_image(&preview_img);
                 let texture = ctx.load_texture("original", color_image, Default::default());
 
                 self.image_path = Some(path.clone());
@@ -132,6 +152,26 @@ impl PituGuiApp {
         }
     }
 
+    fn compute_histogram(&mut self, img: &DynamicImage) {
+        let rgba = img.to_rgba8();
+        let mut sum_r = 0u64;
+        let mut sum_g = 0u64;
+        let mut sum_b = 0u64;
+        let count = (rgba.width() * rgba.height()).max(1) as u64;
+
+        for p in rgba.pixels() {
+            sum_r += p[0] as u64;
+            sum_g += p[1] as u64;
+            sum_b += p[2] as u64;
+        }
+
+        self.histogram_rgb = [
+            (sum_r / count) as u32,
+            (sum_g / count) as u32,
+            (sum_b / count) as u32,
+        ];
+    }
+
     fn apply_pipeline(&mut self, ctx: &egui::Context) {
         let session = match &self.edit_session {
             Some(s) => s,
@@ -140,7 +180,7 @@ impl PituGuiApp {
 
         let mut current_img = session.current_image.clone();
 
-        // 1. Smart Crop
+        // 1. Smart AI Crop
         if self.smart_crop {
             let aspect = parse_aspect_ratio(&self.crop_aspect);
             let opts = SmartCropOptions {
@@ -152,18 +192,23 @@ impl PituGuiApp {
             current_img = smart_crop(&current_img, &opts);
         }
 
-        // 2. Enhance
-        if self.enhance {
-            current_img = enhance_image(&current_img, self.enhance_strength);
-        }
-
-        // 3. Filters
+        // 2. Snapseed Tuning & Filters
         let filter_opts = FilterOptions {
             grayscale: self.grayscale,
+            sepia: self.sepia,
+            invert: self.invert,
             contrast: if (self.contrast - 1.0).abs() > 0.05 { Some(self.contrast) } else { None },
+            warmth: if self.warmth.abs() > 0.05 { Some(self.warmth) } else { None },
+            vignette: if self.vignette > 0.05 { Some(self.vignette) } else { None },
+            structure: if self.structure > 0.05 { Some(self.structure) } else { None },
             ..Default::default()
         };
         current_img = apply_filters(&current_img, &filter_opts);
+
+        // 3. Quality Enhance
+        if self.enhance {
+            current_img = enhance_image(&current_img, self.enhance_strength);
+        }
 
         // 4. Watermark
         if self.enable_watermark && !self.watermark_text.is_empty() {
@@ -179,7 +224,7 @@ impl PituGuiApp {
             }
         }
 
-        // 5. Target Compression
+        // 5. Target Size Compression
         if self.enable_compress && !self.compress_size.is_empty() {
             if let Some(target_bytes) = parse_size_bytes(&self.compress_size) {
                 if let Ok((compressed_bytes, _quality)) = compress_to_max_size(&current_img, target_bytes, ImageFormatChoice::Png) {
@@ -195,23 +240,36 @@ impl PituGuiApp {
 
         self.proc_w = current_img.width();
         self.proc_h = current_img.height();
+        self.compute_histogram(&current_img);
 
-        let color_image = image_to_egui_color_image(&current_img);
+        // Crash-free downsampled preview texture (max 1920x1080)
+        let preview_img = downsample_for_preview(&current_img);
+        let color_image = image_to_egui_color_image(&preview_img);
         let processed_tex = ctx.load_texture("processed", color_image, Default::default());
         self.processed_texture = Some(processed_tex);
     }
 }
 
+/// Downsamples high-resolution images (> 1920x1080) for crash-free 60FPS GPU texture rendering
+fn downsample_for_preview(img: &DynamicImage) -> DynamicImage {
+    if img.width() > 1920 || img.height() > 1080 {
+        img.thumbnail(1920, 1080)
+    } else {
+        img.clone()
+    }
+}
+
+/// Robust, crash-free conversion from DynamicImage to egui::ColorImage
 fn image_to_egui_color_image(img: &DynamicImage) -> egui::ColorImage {
     let rgba = img.to_rgba8();
-    let size = [rgba.width() as _, rgba.height() as _];
-    let pixels = rgba.as_flat_samples();
-    egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let pixels = rgba.into_raw();
+    egui::ColorImage::from_rgba_unmultiplied(size, &pixels)
 }
 
 impl eframe::App for PituGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Drag & Drop Handling
+        // Handle Drag & Drop files
         ctx.input(|i| {
             if !i.raw.dropped_files.is_empty() {
                 if let Some(path) = i.raw.dropped_files[0].path.clone() {
@@ -220,7 +278,7 @@ impl eframe::App for PituGuiApp {
             }
         });
 
-        // 🔵 1. DEEP NAVY TOP HEADER BAR (XenForo-inspired navigation)
+        // 🔵 1. DEEP NAVY TOP HEADER BAR
         egui::TopBottomPanel::top("navy_header_panel")
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(13, 59, 102)))
             .show(ctx, |ui| {
@@ -234,23 +292,23 @@ impl eframe::App for PituGuiApp {
                             .size(22.0),
                     );
                     ui.label(
-                        egui::RichText::new("WORKBENCH v0.1.0")
+                        egui::RichText::new("PRO WORKBENCH v0.1.0")
                             .color(egui::Color32::from_rgb(180, 210, 245))
                             .size(12.0),
                     );
 
                     ui.add_space(30.0);
 
-                    // Navigation Tabs
-                    ui.selectable_value(&mut self.active_tab, GuiTab::Workbench, "🏠 Workbench");
+                    // Top Nav Tabs
+                    ui.selectable_value(&mut self.active_tab, GuiTab::Workbench, "🏠 Pro Editor");
                     ui.selectable_value(&mut self.active_tab, GuiTab::BatchStudio, "⚡ Batch Studio");
                     ui.selectable_value(&mut self.active_tab, GuiTab::Presets, "📋 Presets");
-                    ui.selectable_value(&mut self.active_tab, GuiTab::History, "📜 History");
-                    ui.selectable_value(&mut self.active_tab, GuiTab::About, "ℹ️ About / Coders Info");
+                    ui.selectable_value(&mut self.active_tab, GuiTab::History, "📜 Version History");
+                    ui.selectable_value(&mut self.active_tab, GuiTab::About, "ℹ️ About / Telemetry");
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
-                        if ui.button(egui::RichText::new("📂 Open Image").color(egui::Color32::WHITE)).clicked() {
+                        if ui.button(egui::RichText::new("📂 Open Image...").color(egui::Color32::WHITE)).clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_file() {
                                 self.load_image_from_path(ctx, path);
                             }
@@ -260,19 +318,19 @@ impl eframe::App for PituGuiApp {
                 ui.add_space(8.0);
             });
 
-        // ⚪ 2. SECONDARY SUB-NAVIGATION BAR
+        // ⚪ 2. SECONDARY TOOL SUB-NAV BAR (Snapseed & Photoshop Categories)
         egui::TopBottomPanel::top("sub_nav_panel")
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(245, 247, 250)))
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.label(egui::RichText::new("Tools:").strong().color(egui::Color32::DARK_GRAY));
-                    ui.selectable_value(&mut self.active_sub_tab, SubTab::Canvas, "🎨 Canvas Preview");
+                    ui.label(egui::RichText::new("Pro Tools:").strong().color(egui::Color32::DARK_GRAY));
+                    ui.selectable_value(&mut self.active_sub_tab, SubTab::TuneImage, "🌡️ Tune Image");
                     ui.selectable_value(&mut self.active_sub_tab, SubTab::SmartCrop, "🧠 Smart AI Crop");
-                    ui.selectable_value(&mut self.active_sub_tab, SubTab::Enhance, "✨ Quality Enhance");
+                    ui.selectable_value(&mut self.active_sub_tab, SubTab::Enhance, "✨ Details & Clarity");
                     ui.selectable_value(&mut self.active_sub_tab, SubTab::Compress, "📉 Target File Size");
-                    ui.selectable_value(&mut self.active_sub_tab, SubTab::Filters, "🎨 Filters & Colors");
+                    ui.selectable_value(&mut self.active_sub_tab, SubTab::Filters, "🎨 Vintage Looks");
                     ui.selectable_value(&mut self.active_sub_tab, SubTab::Watermark, "✍️ Watermark");
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -313,13 +371,30 @@ impl eframe::App for PituGuiApp {
                 ui.add_space(4.0);
             });
 
-        // 📊 3. RIGHT METRICS SIDEBAR PANEL (XenForo stats panel style)
+        // 📊 3. RIGHT METRICS & HISTOGRAM SIDEBAR
         egui::SidePanel::right("right_stats_panel")
-            .default_width(260.0)
+            .default_width(270.0)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                ui.heading("📊 Image Metrics");
+                ui.heading("📊 Telemetry & Histogram");
+                ui.separator();
+
+                // Photoshop RGB Histogram Meters
+                ui.label(egui::RichText::new("RGB Channel Averages:").strong());
+                ui.horizontal(|ui| {
+                    ui.label("R:");
+                    ui.add(egui::ProgressBar::new(self.histogram_rgb[0] as f32 / 255.0).fill(egui::Color32::RED).text(format!("{}", self.histogram_rgb[0])));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("G:");
+                    ui.add(egui::ProgressBar::new(self.histogram_rgb[1] as f32 / 255.0).fill(egui::Color32::GREEN).text(format!("{}", self.histogram_rgb[1])));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("B:");
+                    ui.add(egui::ProgressBar::new(self.histogram_rgb[2] as f32 / 255.0).fill(egui::Color32::BLUE).text(format!("{}", self.histogram_rgb[2])));
+                });
+
                 ui.separator();
 
                 egui::Grid::new("metrics_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
@@ -345,7 +420,7 @@ impl eframe::App for PituGuiApp {
                 });
 
                 ui.separator();
-                ui.heading("⚡ Preset Shortcuts");
+                ui.heading("⚡ Quick Styles");
                 if ui.button("🌐 Web Hero (16:9)").clicked() {
                     self.smart_crop = true;
                     self.crop_aspect = "16:9".to_string();
@@ -358,9 +433,14 @@ impl eframe::App for PituGuiApp {
                     self.enhance = true;
                     self.apply_pipeline(ctx);
                 }
+                if ui.button("🎬 Film Noir Sepia").clicked() {
+                    self.sepia = true;
+                    self.vignette = 0.6;
+                    self.apply_pipeline(ctx);
+                }
             });
 
-        // 🎛️ 4. LEFT PIPELINE CONTROLS PANEL
+        // 🎛️ 4. LEFT CONTROL PANEL (Snapseed & Photoshop Tool Controls)
         egui::SidePanel::left("left_controls_panel")
             .default_width(280.0)
             .resizable(true)
@@ -371,7 +451,26 @@ impl eframe::App for PituGuiApp {
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     match self.active_sub_tab {
-                        SubTab::SmartCrop | SubTab::Canvas => {
+                        SubTab::TuneImage => {
+                            ui.group(|ui| {
+                                ui.heading("🌡️ Snapseed Tune Image");
+                                ui.label("Color Warmth / White Balance:");
+                                if ui.add(egui::Slider::new(&mut self.warmth, -1.0..=1.0)).changed() {
+                                    self.apply_pipeline(ctx);
+                                }
+
+                                ui.label("Vignette (Edge Darkening):");
+                                if ui.add(egui::Slider::new(&mut self.vignette, 0.0..=1.0)).changed() {
+                                    self.apply_pipeline(ctx);
+                                }
+
+                                ui.label("Structure & Micro-Clarity:");
+                                if ui.add(egui::Slider::new(&mut self.structure, 0.0..=2.0)).changed() {
+                                    self.apply_pipeline(ctx);
+                                }
+                            });
+                        }
+                        SubTab::SmartCrop => {
                             ui.group(|ui| {
                                 ui.heading("🧠 Smart AI Entropy Crop");
                                 if ui.checkbox(&mut self.smart_crop, "Enable Smart Crop").changed() {
@@ -387,7 +486,7 @@ impl eframe::App for PituGuiApp {
                         }
                         SubTab::Enhance => {
                             ui.group(|ui| {
-                                ui.heading("✨ Quality Enhancement");
+                                ui.heading("✨ Details & Clarity");
                                 if ui.checkbox(&mut self.enhance, "Enable Unsharp Mask").changed() {
                                     self.apply_pipeline(ctx);
                                 }
@@ -415,8 +514,14 @@ impl eframe::App for PituGuiApp {
                         }
                         SubTab::Filters => {
                             ui.group(|ui| {
-                                ui.heading("🎨 Visual Filters");
+                                ui.heading("🎨 Vintage Looks & Filters");
                                 if ui.checkbox(&mut self.grayscale, "Grayscale").changed() {
+                                    self.apply_pipeline(ctx);
+                                }
+                                if ui.checkbox(&mut self.sepia, "Vintage Sepia").changed() {
+                                    self.apply_pipeline(ctx);
+                                }
+                                if ui.checkbox(&mut self.invert, "Invert Colors").changed() {
                                     self.apply_pipeline(ctx);
                                 }
                                 ui.horizontal(|ui| {
@@ -438,6 +543,13 @@ impl eframe::App for PituGuiApp {
                                 }
                             });
                         }
+                    }
+
+                    ui.separator();
+                    ui.checkbox(&mut self.show_split_comparison, "👁️ Interactive Split Comparison");
+                    if self.show_split_comparison {
+                        ui.label("Split Line Position:");
+                        ui.add(egui::Slider::new(&mut self.split_ratio, 0.0..=1.0));
                     }
                 });
             });
@@ -468,7 +580,7 @@ impl eframe::App for PituGuiApp {
                         ui.centered_and_justified(|ui| {
                             ui.group(|ui| {
                                 ui.heading("📥 Drag & Drop Image File Here");
-                                ui.label("or click 'Open Image' in the top navy header bar");
+                                ui.label("or click 'Open Image...' in the top navy header bar to edit");
                             });
                         });
                     }
@@ -486,8 +598,8 @@ impl eframe::App for PituGuiApp {
                     ui.label("Version-controlled image snapshot commits.");
                 }
                 GuiTab::About => {
-                    ui.heading("ℹ️ About Pitu Workbench & Telemetry");
-                    ui.label("Pitu Workbench v0.1.0 • Scriptable CLI & GUI Image Engine.");
+                    ui.heading("ℹ️ About xenPitu Workbench & Telemetry");
+                    ui.label("xenPitu Workbench v0.1.0 • Scriptable CLI & GUI Image Engine.");
                 }
             }
         });
@@ -497,13 +609,13 @@ impl eframe::App for PituGuiApp {
 pub fn run_gui() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("xenPitu Workbench v0.1.0 • Desktop GUI")
+            .with_title("xenPitu Workbench v0.1.0 • Native Pro Desktop GUI")
             .with_inner_size([1280.0, 820.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Pitu Workbench",
+        "xenPitu Workbench",
         options,
         Box::new(|cc| Box::new(PituGuiApp::new(cc))),
     )

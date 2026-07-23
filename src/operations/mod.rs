@@ -94,6 +94,9 @@ impl Pipeline {
                 contrast: args.contrast,
                 blur: args.blur,
                 sharpen: args.sharpen,
+                warmth: None,
+                vignette: None,
+                structure: None,
             });
         }
 
