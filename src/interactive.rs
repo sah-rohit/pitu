@@ -843,6 +843,74 @@ fn tune_parameter_tui(
     result_op
 }
 
+fn get_preview_target_height(w: u32, h: u32) -> u32 {
+    let col_w = 32f32;
+    let target_h = ((col_w * (h as f32 / w as f32) * 0.5).round() as u32).max(1);
+    target_h.min(20)
+}
+
+fn map_click_to_pixel(
+    col: u16,
+    row: u16,
+    w: u32,
+    h: u32,
+    target_h: u32,
+) -> Option<(u32, u32)> {
+    let r = row as i32 - 4;
+    if r < 0 || r >= target_h as i32 {
+        return None;
+    }
+    let y = if target_h > 1 {
+        r as f32 / (target_h - 1) as f32
+    } else {
+        0.0
+    };
+
+    let col_i = col as i32;
+    if col_i >= 42 && col_i < 74 {
+        let x = (col_i - 42) as f32 / 31.0;
+        let px = (x * w as f32).round() as u32;
+        let py = (y * h as f32).round() as u32;
+        return Some((px.min(w - 1), py.min(h - 1)));
+    } else if col_i >= 5 && col_i < 37 {
+        let x = (col_i - 5) as f32 / 31.0;
+        let px = (x * w as f32).round() as u32;
+        let py = (y * h as f32).round() as u32;
+        return Some((px.min(w - 1), py.min(h - 1)));
+    }
+    None
+}
+
+fn draw_indicator_circle(img: &mut DynamicImage, cx: u32, cy: u32, r: u32) {
+    let mut rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let r_f = r as f32;
+    
+    // Draw crosshair at center
+    for offset in -5..=5 {
+        let sx = cx as i32 + offset;
+        if sx >= 0 && sx < w as i32 {
+            rgba.put_pixel(sx as u32, cy, image::Rgba([255, 0, 0, 255]));
+        }
+        let sy = cy as i32 + offset;
+        if sy >= 0 && sy < h as i32 {
+            rgba.put_pixel(cx, sy as u32, image::Rgba([255, 0, 0, 255]));
+        }
+    }
+
+    // Draw circle outline
+    for angle_deg in 0..360 {
+        let rad = (angle_deg as f32).to_radians();
+        let sx = (cx as f32 + r_f * rad.cos()).round() as i32;
+        let sy = (cy as f32 + r_f * rad.sin()).round() as i32;
+        if sx >= 0 && sx < w as i32 && sy >= 0 && sy < h as i32 {
+            rgba.put_pixel(sx as u32, sy as u32, image::Rgba([255, 0, 0, 255]));
+        }
+    }
+
+    *img = DynamicImage::ImageRgba8(rgba);
+}
+
 fn tune_healing_tui(
     original_img: &DynamicImage,
     pre_slide_img: &DynamicImage,
@@ -853,8 +921,10 @@ fn tune_healing_tui(
     if let Err(_) = enable_raw_mode() {
         return None;
     }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let mut result_op = None;
     let (w, h) = pre_slide_img.dimensions();
+    let target_h = get_preview_target_height(w, h);
 
     loop {
         let op = SessionOperation::Healing(cx, cy, r);
@@ -863,10 +933,14 @@ fn tune_healing_tui(
             Err(_) => pre_slide_img.clone(),
         };
 
+        // Draw indicator on a copy of preview
+        let mut preview_with_indicator = preview_img.clone();
+        draw_indicator_circle(&mut preview_with_indicator, cx, cy, r);
+
         print!("\x1b[2J\x1b[H");
-        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+        print!("{}", render_side_by_side_diff(original_img, &preview_with_indicator));
         println!("  🩹 Spot Healing at Center: ({}, {}), Radius: {}", cx, cy, r);
-        println!("  Controls: [Left/Right/Up/Down] move spot, [+/-] change radius, [Enter] commit, [Esc] cancel");
+        println!("  Controls: [Left/Right/Up/Down] move, [+/-] radius, [Mouse Click] to place, [Enter] commit, [Esc] cancel");
 
         match event::read() {
             Ok(Event::Key(key_event)) => {
@@ -899,10 +973,19 @@ fn tune_healing_tui(
                     _ => {}
                 }
             }
+            Ok(Event::Mouse(mouse_event)) => {
+                if let crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse_event.kind {
+                    if let Some((px, py)) = map_click_to_pixel(mouse_event.column, mouse_event.row, w, h, target_h) {
+                        cx = px;
+                        cy = py;
+                    }
+                }
+            }
             _ => {}
         }
     }
 
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     let _ = disable_raw_mode();
     result_op
 }
@@ -919,8 +1002,10 @@ fn tune_selective_tui(
     if let Err(_) = enable_raw_mode() {
         return None;
     }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let mut result_op = None;
     let (w, h) = pre_slide_img.dimensions();
+    let target_h = get_preview_target_height(w, h);
     let mut active_field = 0; // 0: Position, 1: Radius, 2: Exposure, 3: Saturation
 
     loop {
@@ -930,8 +1015,12 @@ fn tune_selective_tui(
             Err(_) => pre_slide_img.clone(),
         };
 
+        // Draw indicator on a copy of preview
+        let mut preview_with_indicator = preview_img.clone();
+        draw_indicator_circle(&mut preview_with_indicator, cx, cy, r);
+
         print!("\x1b[2J\x1b[H");
-        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+        print!("{}", render_side_by_side_diff(original_img, &preview_with_indicator));
 
         println!("\n  🎯 Selective Radial Masking");
         println!("  ────────────────────────────");
@@ -951,7 +1040,7 @@ fn tune_selective_tui(
             }
         }
 
-        println!("\n  Controls: [Tab] switch field, [Left/Right/Up/Down] adjust active, [Enter] commit, [Esc] cancel");
+        println!("\n  Controls: [Tab] switch field, [Left/Right/Up/Down] adjust, [Mouse Click] to place center, [Enter] commit, [Esc] cancel");
 
         match event::read() {
             Ok(Event::Key(key_event)) => {
@@ -1005,10 +1094,20 @@ fn tune_selective_tui(
                     _ => {}
                 }
             }
+            Ok(Event::Mouse(mouse_event)) => {
+                if let crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse_event.kind {
+                    if let Some((px, py)) = map_click_to_pixel(mouse_event.column, mouse_event.row, w, h, target_h) {
+                        cx = px;
+                        cy = py;
+                        active_field = 0; // Highlight center coordinates field
+                    }
+                }
+            }
             _ => {}
         }
     }
 
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     let _ = disable_raw_mode();
     result_op
 }

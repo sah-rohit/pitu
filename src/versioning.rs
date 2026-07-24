@@ -90,7 +90,11 @@ pub struct SnapshotEntry {
 
 pub fn get_history_dir(base_path: &Path) -> PathBuf {
     let parent = base_path.parent().unwrap_or_else(|| Path::new("."));
-    parent.join(".pitu").join("history")
+    let file_stem = base_path
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_else(|| "image".into());
+    parent.join(".pitu").join(format!("{}_history", file_stem))
 }
 
 pub fn initialize_history_if_needed(image_path: &Path) -> anyhow::Result<()> {
