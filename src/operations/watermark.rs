@@ -167,3 +167,71 @@ fn blend_rgba(base: Rgba<u8>, overlay: Rgba<u8>, alpha: f32) -> Rgba<u8> {
 
     Rgba([r, g, b, final_a])
 }
+
+pub fn apply_custom_watermark(
+    img: &DynamicImage,
+    text: &str,
+    cx: u32,
+    cy: u32,
+    scale: f32,
+    rotation_deg: f32,
+    opacity: f32,
+) -> anyhow::Result<DynamicImage> {
+    let mut base = img.to_rgba8();
+    let (bw, bh) = base.dimensions();
+    if bw == 0 || bh == 0 || text.is_empty() {
+        return Ok(img.clone());
+    }
+
+    let font_data = include_bytes!("../assets/DejaVuSans.ttf");
+    let font = FontRef::try_from_slice(font_data as &[u8])
+        .map_err(|e| anyhow::anyhow!("Failed to load embedded font: {}", e))?;
+
+    let font_size = ((bh as f32) * (0.05 * scale * 5.0)).clamp(12.0, 300.0);
+    let scale_px = PxScale::from(font_size);
+
+    let char_count = text.chars().count() as u32;
+    let w_txt = ((char_count as f32 * font_size * 0.65) as u32).max(1);
+    let h_txt = ((font_size * 1.3) as u32).max(1);
+
+    let pad = (w_txt.max(h_txt) as f32 * 0.5) as u32;
+    let cw = w_txt + pad * 2;
+    let ch = h_txt + pad * 2;
+    let mut canvas = RgbaImage::from_pixel(cw, ch, Rgba([0, 0, 0, 0]));
+
+    let alpha = (255.0 * opacity.clamp(0.0, 1.0)) as u8;
+    let text_color = Rgba([255, 255, 255, alpha]);
+    let shadow_color = Rgba([0, 0, 0, (alpha as f32 * 0.6) as u8]);
+
+    draw_text_mut(&mut canvas, shadow_color, pad as i32 + 2, pad as i32 + 2, scale_px, &font, text);
+    draw_text_mut(&mut canvas, text_color, pad as i32, pad as i32, scale_px, &font, text);
+
+    let rotated = imageproc::geometric_transformations::rotate_about_center(
+        &canvas,
+        rotation_deg.to_radians(),
+        imageproc::geometric_transformations::Interpolation::Bilinear,
+        Rgba([0, 0, 0, 0]),
+    );
+
+    let rx_start = cx as i32 - (cw as i32 / 2);
+    let ry_start = cy as i32 - (ch as i32 / 2);
+
+    for y in 0..ch {
+        for x in 0..cw {
+            let px = rx_start + x as i32;
+            let py = ry_start + y as i32;
+            if px >= 0 && px < bw as i32 && py >= 0 && py < bh as i32 {
+                let wp = rotated.get_pixel(x, y);
+                if wp[3] > 0 {
+                    let bp = base.get_pixel_mut(px as u32, py as u32);
+                    let alpha_f = wp[3] as f32 / 255.0;
+                    bp[0] = (bp[0] as f32 * (1.0 - alpha_f) + wp[0] as f32 * alpha_f) as u8;
+                    bp[1] = (bp[1] as f32 * (1.0 - alpha_f) + wp[1] as f32 * alpha_f) as u8;
+                    bp[2] = (bp[2] as f32 * (1.0 - alpha_f) + wp[2] as f32 * alpha_f) as u8;
+                }
+            }
+        }
+    }
+
+    Ok(DynamicImage::ImageRgba8(base))
+}

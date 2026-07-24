@@ -40,6 +40,9 @@ pub enum SessionOperation {
     Healing(u32, u32, u32), // cx, cy, r
     Selective(u32, u32, u32, f32, f32), // cx, cy, r, exp, sat
     DoubleExposure(String, String), // second_path, mode
+    CustomCrop(u32, u32, u32, u32), // x, y, w, h
+    CustomWatermark(String, u32, u32, f32, f32, f32), // text, cx, cy, scale, rot, opacity
+    ToneCurve(Vec<(f32, f32)>), // control points
 }
 
 impl SessionOperation {
@@ -73,6 +76,9 @@ impl SessionOperation {
             Self::Healing(cx, cy, r) => format!("Spot Healing at ({}, {}) r:{}", cx, cy, r),
             Self::Selective(cx, cy, r, exp, sat) => format!("Selective Mask at ({}, {}) r:{} exp:{:.1} sat:{:.1}", cx, cy, r, exp, sat),
             Self::DoubleExposure(path, mode) => format!("Double Exposure '{}' ({})", path, mode),
+            Self::CustomCrop(x, y, w, h) => format!("Crop Box [x:{}, y:{}, w:{}, h:{}]", x, y, w, h),
+            Self::CustomWatermark(text, cx, cy, scale, rot, opacity) => format!("Watermark '{}' at ({}, {}) s:{:.1} r:{:.1}° o:{:.1}", text, cx, cy, scale, rot, opacity),
+            Self::ToneCurve(pts) => format!("Tone Curve with {} points", pts.len()),
         }
     }
 }
@@ -256,6 +262,27 @@ pub fn apply_session_operation(img: &DynamicImage, op: &SessionOperation) -> any
             let fopts = FilterOptions {
                 double_exposure_path: Some(PathBuf::from(path)),
                 double_exposure_mode: Some(mode.clone()),
+                ..Default::default()
+            };
+            Ok(apply_filters(img, &fopts))
+        }
+        SessionOperation::CustomCrop(x, y, w, h) => {
+            let fopts = FilterOptions {
+                custom_crop: Some((*x, *y, *w, *h)),
+                ..Default::default()
+            };
+            Ok(apply_filters(img, &fopts))
+        }
+        SessionOperation::CustomWatermark(text, x, y, scale, rot, opacity) => {
+            let fopts = FilterOptions {
+                custom_watermark: Some((text.clone(), *x, *y, *scale, *rot, *opacity)),
+                ..Default::default()
+            };
+            Ok(apply_filters(img, &fopts))
+        }
+        SessionOperation::ToneCurve(pts) => {
+            let fopts = FilterOptions {
+                tone_curve: Some(pts.clone()),
                 ..Default::default()
             };
             Ok(apply_filters(img, &fopts))

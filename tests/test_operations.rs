@@ -4,6 +4,8 @@ mod cli;
 mod convert;
 #[path = "../src/operations/crop.rs"]
 mod crop;
+#[path = "../src/operations/watermark.rs"]
+mod watermark;
 #[path = "../src/operations/filter.rs"]
 mod filter;
 #[path = "../src/operations/resize.rs"]

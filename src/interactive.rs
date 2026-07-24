@@ -260,9 +260,11 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                         "🩹 Spot Healing / Blemish Removal",
                         "🎯 Selective Adjustment Circle",
                         "🎭 Double Exposure Blending",
+                        "📐 Freeform Bounding Box Crop",
+                        "📈 Custom Spline Tone Curves",
+                        "🏷️ Rotated & Scaled Watermark",
                         "🧠 16:9 Smart Entropy Crop",
                         "📱 1:1 Square Smart Crop",
-                        "🏷️ Text Watermark Overlay",
                         "🖼️ Add Border Frame",
                     ];
 
@@ -372,13 +374,17 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                                 print_error("File does not exist. Double exposure cancelled.", false);
                                 None
                             }
+                        } else if sess_sel.contains("Freeform Bounding Box Crop") {
+                            tune_crop_tui(&original_img, &current_img)
+                        } else if sess_sel.contains("Custom Spline Tone Curves") {
+                            tune_curves_tui(&original_img, &current_img)
+                        } else if sess_sel.contains("Rotated & Scaled Watermark") {
+                            let t = Text::new("Watermark text:").with_default("© Pitu").prompt().unwrap_or_else(|_| "© Pitu".into());
+                            tune_watermark_tui(&original_img, &current_img, t)
                         } else if sess_sel.contains("16:9 Smart Entropy Crop") {
                             Some(SessionOperation::SmartCrop("16:9".to_string()))
                         } else if sess_sel.contains("1:1 Square Smart Crop") {
                             Some(SessionOperation::SmartCrop("1:1".to_string()))
-                        } else if sess_sel.contains("Text Watermark") {
-                            let t = Text::new("Watermark text:").with_default("© Pitu").prompt().unwrap_or_else(|_| "© Pitu".into());
-                            Some(SessionOperation::Watermark(t))
                         } else if sess_sel.contains("Border Frame") {
                             tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Frame(v as u32), "Border Frame width", 15.0, 1.0, 0.0, 100.0)
                         } else {
@@ -1100,6 +1106,379 @@ fn tune_selective_tui(
                         cx = px;
                         cy = py;
                         active_field = 0; // Highlight center coordinates field
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    let _ = disable_raw_mode();
+    result_op
+}
+
+fn draw_dashed_box(img: &mut DynamicImage, x1: u32, y1: u32, x2: u32, y2: u32) {
+    let mut rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    
+    let min_x = x1.min(x2).min(w - 1);
+    let max_x = x1.max(x2).min(w - 1);
+    let min_y = y1.min(y2).min(h - 1);
+    let max_y = y1.max(y2).min(h - 1);
+    
+    for x in min_x..=max_x {
+        if x % 20 < 10 {
+            rgba.put_pixel(x, min_y, image::Rgba([255, 0, 0, 255]));
+            rgba.put_pixel(x, max_y, image::Rgba([255, 0, 0, 255]));
+        }
+    }
+    
+    for y in min_y..=max_y {
+        if y % 20 < 10 {
+            rgba.put_pixel(min_x, y, image::Rgba([255, 0, 0, 255]));
+            rgba.put_pixel(max_x, y, image::Rgba([255, 0, 0, 255]));
+        }
+    }
+    
+    for offset in -5..=5 {
+        let sx1 = min_x as i32 + offset;
+        if sx1 >= 0 && sx1 < w as i32 {
+            rgba.put_pixel(sx1 as u32, min_y, image::Rgba([255, 255, 0, 255]));
+            rgba.put_pixel(sx1 as u32, max_y, image::Rgba([255, 255, 0, 255]));
+        }
+        let sy1 = min_y as i32 + offset;
+        if sy1 >= 0 && sy1 < h as i32 {
+            rgba.put_pixel(min_x, sy1 as u32, image::Rgba([255, 255, 0, 255]));
+            rgba.put_pixel(max_x, sy1 as u32, image::Rgba([255, 255, 0, 255]));
+        }
+    }
+    *img = DynamicImage::ImageRgba8(rgba);
+}
+
+fn tune_crop_tui(
+    original_img: &DynamicImage,
+    pre_slide_img: &DynamicImage,
+) -> Option<SessionOperation> {
+    if let Err(_) = enable_raw_mode() {
+        return None;
+    }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    let mut result_op = None;
+    let (w, h) = pre_slide_img.dimensions();
+    let target_h = get_preview_target_height(w, h);
+
+    let mut x1 = 0;
+    let mut y1 = 0;
+    let mut x2 = w - 1;
+    let mut y2 = h - 1;
+    let mut active_corner = 0; // 0: Top-Left, 1: Bottom-Right
+
+    loop {
+        let mut preview_img = pre_slide_img.clone();
+        draw_dashed_box(&mut preview_img, x1, y1, x2, y2);
+
+        print!("\x1b[2J\x1b[H");
+        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+        
+        println!("\n  📐 Bounding Box Crop Editor");
+        println!("  ───────────────────────────");
+        
+        if active_corner == 0 {
+            println!("  {} Corner: Top-Left ({}, {})", style("▶").cyan().bold(), x1, y1);
+            println!("    Corner: Bottom-Right ({}, {})", x2, y2);
+        } else {
+            println!("    Corner: Top-Left ({}, {})", x1, y1);
+            println!("  {} Corner: Bottom-Right ({}, {})", style("▶").cyan().bold(), x2, y2);
+        }
+
+        println!("\n  Controls: [Tab] switch corner, [Left/Right/Up/Down] move corner, [Mouse Click] nearest corner placement, [Enter] crop, [Esc] cancel");
+
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                match key_event.code {
+                    KeyCode::Tab => {
+                        active_corner = (active_corner + 1) % 2;
+                    }
+                    KeyCode::Left | KeyCode::Char('a') => {
+                        if active_corner == 0 {
+                            x1 = x1.saturating_sub(15).max(0);
+                        } else {
+                            x2 = x2.saturating_sub(15).max(x1 + 10);
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('d') => {
+                        if active_corner == 0 {
+                            x1 = (x1 + 15).min(x2.saturating_sub(10));
+                        } else {
+                            x2 = (x2 + 15).min(w - 1);
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('w') => {
+                        if active_corner == 0 {
+                            y1 = y1.saturating_sub(15).max(0);
+                        } else {
+                            y2 = y2.saturating_sub(15).max(y1 + 10);
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('s') => {
+                        if active_corner == 0 {
+                            y1 = (y1 + 15).min(y2.saturating_sub(10));
+                        } else {
+                            y2 = (y2 + 15).min(h - 1);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let cx = x1.min(x2);
+                        let cy = y1.min(y2);
+                        let cw = x1.max(x2) - cx;
+                        let ch = y1.max(y2) - cy;
+                        result_op = Some(SessionOperation::CustomCrop(cx, cy, cw.max(1), ch.max(1)));
+                        break;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Mouse(mouse_event)) => {
+                if let crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse_event.kind {
+                    if let Some((px, py)) = map_click_to_pixel(mouse_event.column, mouse_event.row, w, h, target_h) {
+                        let dist_to_tl = ((px as f32 - x1 as f32).powi(2) + (py as f32 - y1 as f32).powi(2)).sqrt();
+                        let dist_to_br = ((px as f32 - x2 as f32).powi(2) + (py as f32 - y2 as f32).powi(2)).sqrt();
+                        if dist_to_tl < dist_to_br {
+                            x1 = px.min(x2.saturating_sub(10));
+                            y1 = py.min(y2.saturating_sub(10));
+                            active_corner = 0;
+                        } else {
+                            x2 = px.max(x1 + 10);
+                            y2 = py.max(y1 + 10);
+                            active_corner = 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    let _ = disable_raw_mode();
+    result_op
+}
+
+fn tune_curves_tui(
+    original_img: &DynamicImage,
+    pre_slide_img: &DynamicImage,
+) -> Option<SessionOperation> {
+    if let Err(_) = enable_raw_mode() {
+        return None;
+    }
+    let mut result_op = None;
+    
+    let mut shadows_y = 0.25f32;
+    let mut midtones_y = 0.50f32;
+    let mut highlights_y = 0.75f32;
+    let mut active_point = 1; // 0: Shadows, 1: Midtones, 2: Highlights
+    
+    loop {
+        let pts = vec![(0.25, shadows_y), (0.5, midtones_y), (0.75, highlights_y)];
+        let op = SessionOperation::ToneCurve(pts);
+        let preview_img = match crate::versioning::apply_session_operation(pre_slide_img, &op) {
+            Ok(img) => img,
+            Err(_) => pre_slide_img.clone(),
+        };
+        
+        print!("\x1b[2J\x1b[H");
+        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+        
+        println!("\n  📈 Photoshop Spline Tone Curves Editor");
+        println!("  ──────────────────────────────────────");
+        
+        let labels = [
+            format!("Shadows Point    (X: 0.25, Y: {:.2})", shadows_y),
+            format!("Midtones Point   (X: 0.50, Y: {:.2})", midtones_y),
+            format!("Highlights Point (X: 0.75, Y: {:.2})", highlights_y),
+        ];
+        
+        for (i, label) in labels.iter().enumerate() {
+            if i == active_point {
+                println!("  {} {}", style("▶").cyan().bold(), style(label).white().bold());
+            } else {
+                println!("    {}", style(label).dim());
+            }
+        }
+        
+        println!("\n  Controls: [Tab] switch point, [Up/Down] adjust active Output value, [Enter] commit, [Esc] cancel");
+        
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                match key_event.code {
+                    KeyCode::Tab => {
+                        active_point = (active_point + 1) % 3;
+                    }
+                    KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('+') => {
+                        match active_point {
+                            0 => shadows_y = (shadows_y + 0.05).min(1.0),
+                            1 => midtones_y = (midtones_y + 0.05).min(1.0),
+                            2 => highlights_y = (highlights_y + 0.05).min(1.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('-') => {
+                        match active_point {
+                            0 => shadows_y = (shadows_y - 0.05).max(0.0),
+                            1 => midtones_y = (midtones_y - 0.05).max(0.0),
+                            2 => highlights_y = (highlights_y - 0.05).max(0.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let pts = vec![(0.25, shadows_y), (0.5, midtones_y), (0.75, highlights_y)];
+                        result_op = Some(SessionOperation::ToneCurve(pts));
+                        break;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    let _ = disable_raw_mode();
+    result_op
+}
+
+fn tune_watermark_tui(
+    original_img: &DynamicImage,
+    pre_slide_img: &DynamicImage,
+    text: String,
+) -> Option<SessionOperation> {
+    if let Err(_) = enable_raw_mode() {
+        return None;
+    }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    let mut result_op = None;
+    let (w, h) = pre_slide_img.dimensions();
+    let target_h = get_preview_target_height(w, h);
+
+    let mut cx = w / 2;
+    let mut cy = h / 2;
+    let mut scale = 0.5f32;
+    let mut rot = 0.0f32;
+    let mut opacity = 0.8f32;
+    let mut active_field = 0; // 0: Position, 1: Scale, 2: Rotation, 3: Opacity
+
+    loop {
+        let op = SessionOperation::CustomWatermark(text.clone(), cx, cy, scale, rot, opacity);
+        let preview_img = match crate::versioning::apply_session_operation(pre_slide_img, &op) {
+            Ok(img) => img,
+            Err(_) => pre_slide_img.clone(),
+        };
+
+        print!("\x1b[2J\x1b[H");
+        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+
+        println!("\n  🏷️  Custom Watermark Styling Editor");
+        println!("  ────────────────────────────────────");
+
+        let fields = [
+            format!("Center Position: ({}, {})", cx, cy),
+            format!("Font Scale:      {:.2}", scale),
+            format!("Rotation Angle:  {:.1}°", rot),
+            format!("Opacity Level:   {:.2}", opacity),
+        ];
+
+        for (i, f) in fields.iter().enumerate() {
+            if i == active_field {
+                println!("  {} {}", style("▶").cyan().bold(), style(f).white().bold());
+            } else {
+                println!("    {}", style(f).dim());
+            }
+        }
+
+        println!("\n  Controls: [Tab] switch field, [Left/Right/Up/Down] adjust, [Mouse Click] position center, [Enter] commit, [Esc] cancel");
+
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                match key_event.code {
+                    KeyCode::Tab => {
+                        active_field = (active_field + 1) % 4;
+                    }
+                    KeyCode::Left | KeyCode::Char('a') => {
+                        match active_field {
+                            0 => cx = cx.saturating_sub(25).max(0),
+                            1 => scale = (scale - 0.05).max(0.1),
+                            2 => rot = (rot - 5.0).clamp(-180.0, 180.0),
+                            3 => opacity = (opacity - 0.05).max(0.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('d') => {
+                        match active_field {
+                            0 => cx = (cx + 25).min(w - 1),
+                            1 => scale = (scale + 0.05).min(5.0),
+                            2 => rot = (rot + 5.0).clamp(-180.0, 180.0),
+                            3 => opacity = (opacity + 0.05).min(1.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('w') => {
+                        match active_field {
+                            0 => cy = cy.saturating_sub(25).max(0),
+                            1 => scale = (scale + 0.2).min(5.0),
+                            2 => rot = (rot + 15.0).clamp(-180.0, 180.0),
+                            3 => opacity = (opacity + 0.1).min(1.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('s') => {
+                        match active_field {
+                            0 => cy = (cy + 25).min(h - 1),
+                            1 => scale = (scale - 0.2).max(0.1),
+                            2 => rot = (rot - 15.0).clamp(-180.0, 180.0),
+                            3 => opacity = (opacity - 0.1).max(0.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Char('[') => {
+                        rot = (rot - 5.0).clamp(-180.0, 180.0);
+                    }
+                    KeyCode::Char(']') => {
+                        rot = (rot + 5.0).clamp(-180.0, 180.0);
+                    }
+                    KeyCode::Char('<') | KeyCode::Char(',') => {
+                        opacity = (opacity - 0.05).max(0.0);
+                    }
+                    KeyCode::Char('>') | KeyCode::Char('.') => {
+                        opacity = (opacity + 0.05).min(1.0);
+                    }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        scale = (scale + 0.05).min(5.0);
+                    }
+                    KeyCode::Char('-') | KeyCode::Char('_') => {
+                        scale = (scale - 0.05).max(0.1);
+                    }
+                    KeyCode::Enter => {
+                        result_op = Some(op);
+                        break;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Mouse(mouse_event)) => {
+                if let crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse_event.kind {
+                    if let Some((px, py)) = map_click_to_pixel(mouse_event.column, mouse_event.row, w, h, target_h) {
+                        cx = px;
+                        cy = py;
+                        active_field = 0;
                     }
                 }
             }

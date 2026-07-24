@@ -1,4 +1,4 @@
-use image::{DynamicImage, ImageBuffer, Rgba};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use std::path::PathBuf;
 
 pub struct FilterOptions {
@@ -30,6 +30,9 @@ pub struct FilterOptions {
     pub selective: Option<(u32, u32, u32, f32, f32)>, // cx, cy, radius, exposure_delta, saturation_delta
     pub double_exposure_path: Option<PathBuf>,
     pub double_exposure_mode: Option<String>,
+    pub tone_curve: Option<Vec<(f32, f32)>>,
+    pub custom_crop: Option<(u32, u32, u32, u32)>,
+    pub custom_watermark: Option<(String, u32, u32, f32, f32, f32)>,
 }
 
 impl Default for FilterOptions {
@@ -61,6 +64,9 @@ impl Default for FilterOptions {
             selective: None,
             double_exposure_path: None,
             double_exposure_mode: None,
+            tone_curve: None,
+            custom_crop: None,
+            custom_watermark: None,
         }
     }
 }
@@ -183,6 +189,27 @@ pub fn apply_filters(img: &DynamicImage, opts: &FilterOptions) -> DynamicImage {
     if let Some(ref path) = opts.double_exposure_path {
         if let Some(ref mode) = opts.double_exposure_mode {
             result = apply_double_exposure(&result, path, mode);
+        }
+    }
+
+    if let Some((x, y, w, h)) = opts.custom_crop {
+        let (iw, ih) = result.dimensions();
+        let cx = x.min(iw.saturating_sub(1));
+        let cy = y.min(ih.saturating_sub(1));
+        let cw = w.min(iw - cx);
+        let ch = h.min(ih - cy);
+        if cw > 0 && ch > 0 {
+            result = result.crop_imm(cx, cy, cw, ch);
+        }
+    }
+
+    if let Some(ref pts) = opts.tone_curve {
+        result = apply_tone_curve(&result, pts);
+    }
+
+    if let Some((ref text, cx, cy, scale, rot, opacity)) = opts.custom_watermark {
+        if let Ok(wm) = super::watermark::apply_custom_watermark(&result, text, cx, cy, scale, rot, opacity) {
+            result = wm;
         }
     }
 
@@ -559,4 +586,78 @@ fn apply_double_exposure(img: &DynamicImage, second_path: &std::path::Path, mode
     }
 
     DynamicImage::ImageRgba8(rgba1)
+}
+
+pub fn apply_tone_curve(img: &DynamicImage, control_points: &[(f32, f32)]) -> DynamicImage {
+    if control_points.is_empty() {
+        return img.clone();
+    }
+    
+    let mut pts = control_points.to_vec();
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    
+    if pts.first().unwrap().0 > 0.0 {
+        pts.insert(0, (0.0, 0.0));
+    }
+    if pts.last().unwrap().0 < 1.0 {
+        pts.push((1.0, 1.0));
+    }
+    
+    let n = pts.len();
+    let mut tangents = vec![0.0f32; n];
+    for i in 0..n {
+        if i == 0 {
+            tangents[0] = (pts[1].1 - pts[0].1) / (pts[1].0 - pts[0].0);
+        } else if i == n - 1 {
+            tangents[n - 1] = (pts[n - 1].1 - pts[n - 2].1) / (pts[n - 1].0 - pts[n - 2].0);
+        } else {
+            let dx = pts[i + 1].0 - pts[i - 1].0;
+            if dx > 0.0 {
+                tangents[i] = (pts[i + 1].1 - pts[i - 1].1) / dx;
+            } else {
+                tangents[i] = 0.0;
+            }
+        }
+    }
+    
+    let mut lut = [0u8; 256];
+    for val in 0..=255 {
+        let x = val as f32 / 255.0;
+        let mut idx = 0;
+        for i in 0..n - 1 {
+            if x >= pts[i].0 && x <= pts[i + 1].0 {
+                idx = i;
+                break;
+            }
+        }
+        
+        let x0 = pts[idx].0;
+        let x1 = pts[idx + 1].0;
+        let y0 = pts[idx].1;
+        let y1 = pts[idx + 1].1;
+        let m0 = tangents[idx];
+        let m1 = tangents[idx + 1];
+        
+        let dx = x1 - x0;
+        let t = if dx > 0.0 { (x - x0) / dx } else { 0.0 };
+        
+        let t2 = t * t;
+        let t3 = t2 * t;
+        
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+        
+        let y = h00 * y0 + h10 * m0 * dx + h01 * y1 + h11 * m1 * dx;
+        lut[val] = (y.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    
+    let mut rgba = img.to_rgba8();
+    for p in rgba.pixels_mut() {
+        p[0] = lut[p[0] as usize];
+        p[1] = lut[p[1] as usize];
+        p[2] = lut[p[2] as usize];
+    }
+    DynamicImage::ImageRgba8(rgba)
 }
