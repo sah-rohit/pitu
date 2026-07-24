@@ -1,7 +1,6 @@
 mod batch;
 mod cli;
 mod config;
-mod gui;
 mod interactive;
 mod manual;
 mod operations;
@@ -14,7 +13,6 @@ use batch::{execute_batch, expand_input_paths, BatchOptions};
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands, ProcessArgs};
 use config::{create_default_config_file, load_config};
-use gui::run_gui;
 use manual::{install_global_launcher, show_info_screen, show_manual_screen};
 use operations::Pipeline;
 use std::io;
@@ -23,15 +21,11 @@ use std::process::exit;
 use ui::ascii_preview::{render_diff_cmd, render_preview_cmd};
 use ui::inspect::render_image_inspector;
 use utils::{print_banner, print_error, print_json_report, print_success};
-use versioning::{create_snapshot, list_history};
+use versioning::{create_snapshot, list_history, revert_to_commit};
+use interactive::run_interactive_rebase;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    // Check if --gui flag or `pitu gui` subcommand was passed
-    if cli.gui || matches!(cli.command, Some(Commands::Gui)) {
-        return run_gui();
-    }
 
     // Check subcommands that exit immediately
     match cli.command {
@@ -52,12 +46,18 @@ fn main() -> anyhow::Result<()> {
             return create_default_config_file();
         }
         Some(Commands::Sync { ref file, ref message }) => {
-            let entry = create_snapshot(Path::new(file), message)?;
+            let entry = create_snapshot(Path::new(file), message, None)?;
             print_success(
                 &format!("Snapshot commit created! Hash: [{}]", entry.hash),
                 false,
             );
             return Ok(());
+        }
+        Some(Commands::Rebase { ref file }) => {
+            return run_interactive_rebase(Path::new(file));
+        }
+        Some(Commands::Revert { ref file, ref commit }) => {
+            return revert_to_commit(Path::new(file), commit);
         }
         Some(Commands::History { ref file }) => {
             let history = list_history(Path::new(file));
@@ -67,11 +67,18 @@ fn main() -> anyhow::Result<()> {
                 println!("\n  📜 VERSION COMMIT HISTORY TIMELINE for: {}", file);
                 println!("  ───────────────────────────────────────────────────────────");
                 for entry in history {
+                    let status = if entry.enabled {
+                        console::style("● active").green()
+                    } else {
+                        console::style("○ disabled").red()
+                    };
+                    let op_desc = entry.operation.as_ref().map_or("".to_string(), |op| format!(" ({})", op.description()));
                     println!(
-                        "  ▫ [{}] {} - {}",
+                        "  ▫ [{}] {} - {}{}",
                         console::style(&entry.hash).cyan().bold(),
+                        status,
                         console::style(&entry.message).green(),
-                        console::style(format!("{}s ago", entry.timestamp_sec)).dim()
+                        console::style(op_desc).dim()
                     );
                 }
                 println!();

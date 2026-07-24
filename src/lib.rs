@@ -1,7 +1,6 @@
 pub mod batch;
 pub mod cli;
 pub mod config;
-pub mod gui;
 pub mod interactive;
 pub mod manual;
 pub mod operations;

@@ -77,10 +77,6 @@ pub struct Cli {
     /// Overwrite existing output files without prompting
     #[arg(long = "overwrite", global = true, default_value_t = true)]
     pub overwrite: bool,
-
-    /// Launch the Native Desktop Graphical User Interface (GUI) Workbench
-    #[arg(long = "gui", global = true, default_value_t = false)]
-    pub gui: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -144,8 +140,23 @@ pub enum Commands {
         file: String,
     },
 
-    /// Launch the Native Desktop Graphical User Interface (GUI) Workbench
-    Gui,
+    /// Launch interactive rebase wizard to selectively toggle/remove image edit operations
+    Rebase {
+        /// Target image path
+        #[arg(required = true)]
+        file: String,
+    },
+
+    /// Revert target image to a specific version snapshot hash or index
+    Revert {
+        /// Target image path
+        #[arg(required = true)]
+        file: String,
+
+        /// Commit hash or numeric history index to revert to
+        #[arg(required = true)]
+        commit: String,
+    },
 
     /// Launch interactive step-by-step wizard dashboard
     Interactive,
@@ -269,6 +280,66 @@ pub struct ProcessArgs {
     /// Apply sharpen filter
     #[arg(long = "sharpen")]
     pub sharpen: Option<f32>,
+
+    /// Apply color warmth adjustment (-1.0 to 1.0)
+    #[arg(long = "warmth")]
+    pub warmth: Option<f32>,
+
+    /// Apply vignette strength (0.0 to 1.5)
+    #[arg(long = "vignette")]
+    pub vignette: Option<f32>,
+
+    /// Apply structure / micro-contrast (0.0 to 3.0)
+    #[arg(long = "structure")]
+    pub structure: Option<f32>,
+
+    /// Apply HDR Scape filter
+    #[arg(long = "hdr-scape", default_value_t = false)]
+    pub hdr_scape: bool,
+
+    /// Apply Glamour Glow filter
+    #[arg(long = "glamour-glow", default_value_t = false)]
+    pub glamour_glow: bool,
+
+    /// Apply Haze Removal filter
+    #[arg(long = "haze-removal", default_value_t = false)]
+    pub haze_removal: bool,
+
+    /// Add a solid border frame width in pixels
+    #[arg(long = "frame-width")]
+    pub frame_width: Option<u32>,
+
+    /// Adjust exposure (-5.0 to 5.0)
+    #[arg(long = "exposure")]
+    pub exposure: Option<f32>,
+
+    /// Adjust saturation (0.0 to 3.0)
+    #[arg(long = "saturation")]
+    pub saturation: Option<f32>,
+
+    /// Adjust shadows (-1.0 to 1.0)
+    #[arg(long = "shadows")]
+    pub shadows: Option<f32>,
+
+    /// Adjust highlights (-1.0 to 1.0)
+    #[arg(long = "highlights")]
+    pub highlights: Option<f32>,
+
+    /// Apply high-contrast black & white Noir filter
+    #[arg(long = "noir", default_value_t = false)]
+    pub noir: bool,
+
+    /// Apply Vintage filter
+    #[arg(long = "vintage", default_value_t = false)]
+    pub vintage: bool,
+
+    /// Apply Grunge texture filter
+    #[arg(long = "grunge", default_value_t = false)]
+    pub grunge: bool,
+
+    /// Apply Lens Blur radius (sigma > 0.0)
+    #[arg(long = "lens-blur")]
+    pub lens_blur: Option<f32>,
 }
 
 #[derive(Args, Debug)]

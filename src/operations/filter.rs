@@ -15,6 +15,15 @@ pub struct FilterOptions {
     pub glamour_glow: bool,
     pub haze_removal: bool,
     pub frame_width: Option<u32>,
+    // Extended Snapseed / Photoshop parameters
+    pub exposure: Option<f32>,
+    pub saturation: Option<f32>,
+    pub shadows: Option<f32>,
+    pub highlights: Option<f32>,
+    pub noir: bool,
+    pub vintage: bool,
+    pub grunge: bool,
+    pub lens_blur: Option<f32>,
 }
 
 impl Default for FilterOptions {
@@ -34,6 +43,14 @@ impl Default for FilterOptions {
             glamour_glow: false,
             haze_removal: false,
             frame_width: None,
+            exposure: None,
+            saturation: None,
+            shadows: None,
+            highlights: None,
+            noir: false,
+            vintage: false,
+            grunge: false,
+            lens_blur: None,
         }
     }
 }
@@ -101,6 +118,48 @@ pub fn apply_filters(img: &DynamicImage, opts: &FilterOptions) -> DynamicImage {
 
     if opts.haze_removal {
         result = apply_haze_removal(&result);
+    }
+
+    if let Some(exp) = opts.exposure {
+        if exp.abs() > 0.05 {
+            result = apply_exposure(&result, exp);
+        }
+    }
+
+    if let Some(sat) = opts.saturation {
+        if (sat - 1.0).abs() > 0.05 {
+            result = apply_saturation(&result, sat);
+        }
+    }
+
+    if let Some(sh) = opts.shadows {
+        if sh.abs() > 0.05 {
+            result = apply_shadows(&result, sh);
+        }
+    }
+
+    if let Some(hi) = opts.highlights {
+        if hi.abs() > 0.05 {
+            result = apply_highlights(&result, hi);
+        }
+    }
+
+    if opts.noir {
+        result = apply_noir(&result);
+    }
+
+    if opts.vintage {
+        result = apply_vintage(&result);
+    }
+
+    if opts.grunge {
+        result = apply_grunge(&result);
+    }
+
+    if let Some(lb) = opts.lens_blur {
+        if lb > 0.05 {
+            result = apply_lens_blur(&result, lb);
+        }
     }
 
     if let Some(border) = opts.frame_width {
@@ -226,7 +285,7 @@ fn apply_glamour_glow(img: &DynamicImage) -> DynamicImage {
 
 /// Haze Removal: increase local contrast and reduce atmospheric haze
 fn apply_haze_removal(img: &DynamicImage) -> DynamicImage {
-    let mut result = img.adjust_contrast(20.0);
+    let result = img.adjust_contrast(20.0);
     let rgba = result.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut out = ImageBuffer::new(w, h);
@@ -263,4 +322,85 @@ fn apply_frame(img: &DynamicImage, border: u32) -> DynamicImage {
         }
     }
     DynamicImage::ImageRgba8(out)
+}
+
+fn apply_exposure(img: &DynamicImage, exp: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    let multiplier = 2.0f32.powf(exp);
+    for p in rgba.pixels_mut() {
+        p[0] = (p[0] as f32 * multiplier).clamp(0.0, 255.0) as u8;
+        p[1] = (p[1] as f32 * multiplier).clamp(0.0, 255.0) as u8;
+        p[2] = (p[2] as f32 * multiplier).clamp(0.0, 255.0) as u8;
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_saturation(img: &DynamicImage, sat: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    for p in rgba.pixels_mut() {
+        let r = p[0] as f32;
+        let g = p[1] as f32;
+        let b = p[2] as f32;
+        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        p[0] = (gray + (r - gray) * sat).clamp(0.0, 255.0) as u8;
+        p[1] = (gray + (g - gray) * sat).clamp(0.0, 255.0) as u8;
+        p[2] = (gray + (b - gray) * sat).clamp(0.0, 255.0) as u8;
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_shadows(img: &DynamicImage, sh: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    for p in rgba.pixels_mut() {
+        for c in 0..3 {
+            let val = p[c] as f32;
+            let factor = (1.0 - val / 255.0).clamp(0.0, 1.0);
+            p[c] = (val + sh * 50.0 * factor).clamp(0.0, 255.0) as u8;
+        }
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_highlights(img: &DynamicImage, hi: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    for p in rgba.pixels_mut() {
+        for c in 0..3 {
+            let val = p[c] as f32;
+            let factor = (val / 255.0).clamp(0.0, 1.0);
+            p[c] = (val + hi * 50.0 * factor).clamp(0.0, 255.0) as u8;
+        }
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_noir(img: &DynamicImage) -> DynamicImage {
+    let mut result = DynamicImage::ImageLuma8(img.to_luma8());
+    result = result.adjust_contrast(30.0);
+    apply_vignette(&result, 0.75)
+}
+
+fn apply_vintage(img: &DynamicImage) -> DynamicImage {
+    let tinted = apply_warmth(img, 0.35);
+    let desaturated = apply_saturation(&tinted, 0.6);
+    apply_vignette(&desaturated, 0.4)
+}
+
+fn apply_grunge(img: &DynamicImage) -> DynamicImage {
+    let mut result = apply_saturation(img, 0.4);
+    result = result.adjust_contrast(35.0);
+    result = apply_vignette(&result, 0.8);
+    let mut rgba = result.to_rgba8();
+    let mut rng_state = 12345u32;
+    for p in rgba.pixels_mut() {
+        rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+        let noise = ((rng_state % 31) as f32 - 15.0) * 0.8;
+        p[0] = (p[0] as f32 + noise).clamp(0.0, 255.0) as u8;
+        p[1] = (p[1] as f32 + noise).clamp(0.0, 255.0) as u8;
+        p[2] = (p[2] as f32 + noise).clamp(0.0, 255.0) as u8;
+    }
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_lens_blur(img: &DynamicImage, strength: f32) -> DynamicImage {
+    img.blur(strength * 3.5)
 }

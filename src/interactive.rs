@@ -4,15 +4,18 @@ use crate::operations::compress::{compress_to_max_size, parse_size_bytes};
 use crate::operations::enhance::enhance_image;
 use crate::operations::universal_reader::load_universal_image;
 use crate::operations::Pipeline;
-use crate::session::EditSession;
-use crate::ui::ascii_preview::{render_ascii_thumbnail, render_diff_cmd, render_preview_cmd};
+use crate::ui::ascii_preview::{render_preview_cmd, render_side_by_side_diff};
 use crate::ui::banner::{print_footer_hints, print_header_banner, print_welcome_dashboard};
 use crate::ui::exporter::{compute_target_path, post_save_action_prompt, prompt_save_options};
 use crate::ui::inspect::render_image_inspector;
 use crate::utils::{print_error, print_info, print_success};
+use crate::versioning::{
+    create_snapshot, list_history, rebuild_image_from_history, revert_to_commit, SessionOperation,
+};
 use console::style;
 use inquire::{Confirm, Select, Text};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::Path;
 
 fn prompt_back_to_dashboard() -> bool {
     println!();
@@ -30,7 +33,7 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
 
         let action_choices = vec![
             "─── 🔄 Continuous Workbench & Session ───",
-            "🎨  Continuous Edit Session (Chain Operations with Undo & Redo)",
+            "🎨  Continuous Edit Session (Chain Operations with Auto-Save & Rebase)",
             "─── 🧠 Smart AI & Quality Enhancements ───",
             "✨  Enhance Quality, Sharpness & Color Pop",
             "📉  Compress File to Target Max Size (e.g. < 500KB, 2MB)",
@@ -47,6 +50,8 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
             "🔍  Inspect Image Metadata & Color Specs",
             "🗺️  View Terminal Entropy Heatmap Preview",
             "─── 📜 Versioning & Sync ───",
+            "🛠️  Interactive Rebase (Selectively toggle/remove intermediate effects)",
+            "↩️  Revert Image to Any Snapshot Commit",
             "📜  Create Snapshot Commit Sync & View History Timeline",
             "─── 📖 Help & Config ───",
             "📝  Generate Starter pitu.toml Configuration",
@@ -71,7 +76,7 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
         while choice.starts_with("───") {
             println!("  Please select an actionable operation from the menu below.\n");
             let retry = Select::new("Select Action / Operation:", vec![
-                "🎨  Continuous Edit Session (Chain Operations with Undo & Redo)",
+                "🎨  Continuous Edit Session (Chain Operations with Auto-Save & Rebase)",
                 "✨  Enhance Quality, Sharpness & Color Pop",
                 "📉  Compress File to Target Max Size (e.g. < 500KB, 2MB)",
                 "🖼️  Quick 16:9 Smart Entropy Crop (Focal-point preserved)",
@@ -84,6 +89,8 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                 "👁️  Side-by-Side Visual Diff (Original vs Processed)",
                 "🔍  Inspect Image Metadata & Color Specs",
                 "🗺️  View Terminal Entropy Heatmap Preview",
+                "🛠️  Interactive Rebase (Selectively toggle/remove intermediate effects)",
+                "↩️  Revert Image to Any Snapshot Commit",
                 "📜  Create Snapshot Commit Sync & View History Timeline",
                 "📝  Generate Starter pitu.toml Configuration",
                 "📖  View User Manual & Documentation",
@@ -148,7 +155,7 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
         let input_path_obj = Path::new(&input_pattern);
 
         if choice.contains("Create Snapshot Commit Sync") {
-            let history = crate::versioning::list_history(input_path_obj);
+            let history = list_history(input_path_obj);
             println!("\n  📜 VERSION COMMIT HISTORY TIMELINE for: {}", style(&input_pattern).cyan().bold());
             println!("  ───────────────────────────────────────────────────────────");
             if history.is_empty() {
@@ -172,7 +179,7 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
 
             if do_sync {
                 let msg = Text::new("Commit Message:").with_default("Updated image snapshot").prompt().unwrap_or_else(|_| "Snapshot".into());
-                if let Ok(entry) = crate::versioning::create_snapshot(input_path_obj, &msg) {
+                if let Ok(entry) = create_snapshot(input_path_obj, &msg, None) {
                     print_success(&format!("Snapshot created! Hash: [{}]", entry.hash), false);
                 }
             }
@@ -183,87 +190,217 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
             continue;
         }
 
+        if choice.contains("Interactive Rebase") {
+            if let Err(e) = run_interactive_rebase(input_path_obj) {
+                print_error(&format!("Rebase error: {}", e), false);
+            }
+            if !prompt_back_to_dashboard() {
+                return Ok(());
+            }
+            continue;
+        }
+
+        if choice.contains("Revert Image to Any Snapshot Commit") {
+            if let Err(e) = run_interactive_revert(input_path_obj) {
+                print_error(&format!("Revert error: {}", e), false);
+            }
+            if !prompt_back_to_dashboard() {
+                return Ok(());
+            }
+            continue;
+        }
+
         if choice.contains("Continuous Edit Session") {
             if let Ok(read_res) = load_universal_image(input_path_obj) {
-                let mut session = EditSession::new(read_res.image);
+                // Initialize history
+                let _ = crate::versioning::initialize_history_if_needed(input_path_obj);
+                let history = list_history(input_path_obj);
+                
+                let mut current_img = read_res.image;
+                let original_img = if !history.is_empty() {
+                    image::open(&history[0].snapshot_file).unwrap_or_else(|_| current_img.clone())
+                } else {
+                    current_img.clone()
+                };
 
                 loop {
-                    print!("{}", render_ascii_thumbnail(&session.current_image, 40));
-                    println!("  📜 History Chain: {}\n", style(session.history_log.join(" ➔ ")).dim());
+                    let history = list_history(input_path_obj);
+
+                    // Print beautiful Original vs Processed side-by-side terminal dashboard!
+                    print!("{}", render_side_by_side_diff(&original_img, &current_img));
+
+                    println!("  📜 History Operations Log:\n");
+                    for (i, entry) in history.iter().enumerate().skip(1) {
+                        let status = if entry.enabled {
+                            style("● active").green()
+                        } else {
+                            style("○ disabled").red()
+                        };
+                        let desc = entry.operation.as_ref().map_or("Custom Edit".to_string(), |op| op.description());
+                        println!("    {}. [{}] {} - {}", i, style(&entry.hash).cyan(), status, desc);
+                    }
+                    println!();
 
                     let mut session_choices = vec![
-                        "✨ Add Quality Enhancement & Sharpening",
-                        "🖼️ Add 16:9 Smart Entropy Crop",
-                        "📱 Add 1:1 Square Crop",
-                        "🎨 Add Contrast & Grayscale Boost",
-                        "🏷️ Add Text Watermark",
+                        "💡 Exposure (Brighten/Darken)",
+                        "🎨 Saturation (Color Intensity)",
+                        "🌡️ Warmth (Cool / Golden temperature)",
+                        "📐 Details / Structure Clarity",
+                        "🎭 Vignette Halo Border",
+                        "🌅 HDR Scape Dynamic Range Boost",
+                        "✨ Glamour Soft Portrait Glow",
+                        "🌫️ Haze Removal De-haze",
+                        "🌑 Shadows Recovery",
+                        "☀️ Highlights Recovery",
+                        "🎬 Noir (High-contrast B&W)",
+                        "🎞️ Vintage Classic Film Tint",
+                        "🎸 Grunge Scratchy Grain",
+                        "👁️ Lens Blur / Bokeh Focus",
+                        "🧠 16:9 Smart Entropy Crop",
+                        "📱 1:1 Square Smart Crop",
+                        "🏷️ Text Watermark Overlay",
+                        "🖼️ Add Border Frame",
                     ];
 
-                    if session.can_undo() {
-                        session_choices.push("↩️  Undo Last Operation (Ctrl+Z)");
-                    }
-                    if session.can_redo() {
-                        session_choices.push("🔁  Redo Operation (Ctrl+Y)");
-                    }
-                    session_choices.push("💾  Save & Export Result");
-                    session_choices.push("🚪  Finish Session");
+                    // Persistent Undo / Redo checks
+                    let has_undo = history.iter().skip(1).any(|e| e.enabled);
+                    let has_redo = history.iter().skip(1).any(|e| !e.enabled);
 
-                    let sess_sel = match Select::new("Choose Operation to Chain:", session_choices).prompt() {
+                    if has_undo {
+                        session_choices.push("↩️  Undo Last Active Edit");
+                    }
+                    if has_redo {
+                        session_choices.push("🔁  Redo Last Disabled Edit");
+                    }
+                    session_choices.push("🛠️  Interactive Rebase (Selective Layer Edit)");
+                    session_choices.push("💾  Export / Save As Copy");
+                    session_choices.push("🚪  Finish & Exit Session");
+
+                    let sess_sel = match Select::new("Choose Adjustment / Operation:", session_choices).prompt() {
                         Ok(s) => s,
                         Err(_) => break,
                     };
 
-                    if sess_sel.contains("Undo") {
-                        if session.undo() {
-                            print_success("Undid last operation!", false);
-                        }
-                    } else if sess_sel.contains("Redo") {
-                        if session.redo() {
-                            print_success("Redid operation!", false);
-                        }
-                    } else if sess_sel.contains("Enhance") {
-                        let enhanced = enhance_image(&session.current_image, 1.2);
-                        session.apply_action(enhanced, "Quality Enhanced".to_string());
-                    } else if sess_sel.contains("16:9 Smart Entropy Crop") {
-                        let opts = ProcessArgs { smart_crop: Some("16:9".to_string()), ..Default::default() };
-                        if let Ok(p) = Pipeline::from_process_args(&opts) {
-                            if let Ok(processed) = p.execute(&session.current_image) {
-                                session.apply_action(processed, "16:9 Crop".to_string());
+                    if sess_sel.contains("Undo Last Active Edit") {
+                        // Toggle last enabled to disabled
+                        let mut history = list_history(input_path_obj);
+                        if let Some(idx) = history.iter().rposition(|e| e.enabled && e.operation.is_some()) {
+                            history[idx].enabled = false;
+                            let log_file = crate::versioning::get_history_dir(input_path_obj).join("history.json");
+                            let _ = fs::write(&log_file, serde_json::to_string_pretty(&history)?);
+                            if let Ok(rebuilt) = rebuild_image_from_history(input_path_obj) {
+                                current_img = rebuilt;
+                                let _ = current_img.save(input_path_obj);
+                                print_success("Undid last adjustment persistently!", false);
                             }
                         }
-                    } else if sess_sel.contains("1:1 Square Crop") {
-                        let opts = ProcessArgs { smart_crop: Some("1:1".to_string()), ..Default::default() };
-                        if let Ok(p) = Pipeline::from_process_args(&opts) {
-                            if let Ok(processed) = p.execute(&session.current_image) {
-                                session.apply_action(processed, "1:1 Crop".to_string());
+                    } else if sess_sel.contains("Redo Last Disabled Edit") {
+                        // Toggle first disabled to enabled
+                        let mut history = list_history(input_path_obj);
+                        if let Some(idx) = history.iter().position(|e| !e.enabled && e.operation.is_some()) {
+                            history[idx].enabled = true;
+                            let log_file = crate::versioning::get_history_dir(input_path_obj).join("history.json");
+                            let _ = fs::write(&log_file, serde_json::to_string_pretty(&history)?);
+                            if let Ok(rebuilt) = rebuild_image_from_history(input_path_obj) {
+                                current_img = rebuilt;
+                                let _ = current_img.save(input_path_obj);
+                                print_success("Redid adjustment persistently!", false);
                             }
                         }
-                    } else if sess_sel.contains("Contrast & Grayscale") {
-                        let opts = ProcessArgs { grayscale: true, contrast: Some(15.0), ..Default::default() };
-                        if let Ok(p) = Pipeline::from_process_args(&opts) {
-                            if let Ok(processed) = p.execute(&session.current_image) {
-                                session.apply_action(processed, "Grayscale+Contrast".to_string());
-                            }
+                    } else if sess_sel.contains("Interactive Rebase") {
+                        let _ = run_interactive_rebase(input_path_obj);
+                        if let Ok(rebuilt) = rebuild_image_from_history(input_path_obj) {
+                            current_img = rebuilt;
                         }
-                    } else if sess_sel.contains("Text Watermark") {
-                        let txt = Text::new("Watermark Text:").with_default("© Pitu").prompt().unwrap_or_else(|_| "Pitu".into());
-                        let opts = ProcessArgs { watermark_text: Some(txt), ..Default::default() };
-                        if let Ok(p) = Pipeline::from_process_args(&opts) {
-                            if let Ok(processed) = p.execute(&session.current_image) {
-                                session.apply_action(processed, "Watermark".to_string());
-                            }
-                        }
-                    } else if sess_sel.contains("Save & Export") {
+                    } else if sess_sel.contains("Finish") {
+                        break;
+                    } else if sess_sel.contains("Export") {
                         let save_options = prompt_save_options(input_path_obj);
                         let target_path = compute_target_path(input_path_obj, &save_options);
                         let fmt = save_options.format.unwrap_or(crate::cli::ImageFormatChoice::Webp);
-                        if let Ok(bytes) = crate::operations::convert::convert_format_to_bytes(&session.current_image, fmt, 85) {
+                        if let Ok(bytes) = crate::operations::convert::convert_format_to_bytes(&current_img, fmt, 85) {
                             if std::fs::write(&target_path, bytes).is_ok() {
                                 post_save_action_prompt(&target_path);
                             }
                         }
                     } else {
-                        break;
+                        // Parse operation
+                        let op = if sess_sel.contains("Exposure") {
+                            let exp = Text::new("Exposure offset (-3.0 to 3.0):").with_default("0.5").prompt().unwrap_or_else(|_| "0.5".into());
+                            let val = exp.parse::<f32>().unwrap_or(0.5);
+                            Some(SessionOperation::Exposure(val))
+                        } else if sess_sel.contains("Saturation") {
+                            let sat = Text::new("Saturation multiplier (0.0 to 2.5):").with_default("1.2").prompt().unwrap_or_else(|_| "1.2".into());
+                            let val = sat.parse::<f32>().unwrap_or(1.2);
+                            Some(SessionOperation::Saturation(val))
+                        } else if sess_sel.contains("Warmth") {
+                            let w = Text::new("Color Warmth (-1.0 cool to 1.0 warm):").with_default("0.25").prompt().unwrap_or_else(|_| "0.25".into());
+                            let val = w.parse::<f32>().unwrap_or(0.25);
+                            Some(SessionOperation::Warmth(val))
+                        } else if sess_sel.contains("Structure") {
+                            let s = Text::new("Structure / Micro-contrast (0.0 to 3.0):").with_default("1.0").prompt().unwrap_or_else(|_| "1.0".into());
+                            let val = s.parse::<f32>().unwrap_or(1.0);
+                            Some(SessionOperation::Structure(val))
+                        } else if sess_sel.contains("Vignette") {
+                            let v = Text::new("Vignette strength (0.0 to 1.5):").with_default("0.5").prompt().unwrap_or_else(|_| "0.5".into());
+                            let val = v.parse::<f32>().unwrap_or(0.5);
+                            Some(SessionOperation::Vignette(val))
+                        } else if sess_sel.contains("HDR Scape") {
+                            Some(SessionOperation::HdrScape)
+                        } else if sess_sel.contains("Glamour") {
+                            Some(SessionOperation::GlamourGlow)
+                        } else if sess_sel.contains("Haze Removal") {
+                            Some(SessionOperation::HazeRemoval)
+                        } else if sess_sel.contains("Shadows") {
+                            let sh = Text::new("Shadows level (-1.0 to 1.0):").with_default("0.3").prompt().unwrap_or_else(|_| "0.3".into());
+                            let val = sh.parse::<f32>().unwrap_or(0.3);
+                            Some(SessionOperation::Shadows(val))
+                        } else if sess_sel.contains("Highlights") {
+                            let hi = Text::new("Highlights level (-1.0 to 1.0):").with_default("-0.2").prompt().unwrap_or_else(|_| "-0.2".into());
+                            let val = hi.parse::<f32>().unwrap_or(-0.2);
+                            Some(SessionOperation::Highlights(val))
+                        } else if sess_sel.contains("Noir") {
+                            Some(SessionOperation::Noir)
+                        } else if sess_sel.contains("Vintage") {
+                            Some(SessionOperation::Vintage)
+                        } else if sess_sel.contains("Grunge") {
+                            Some(SessionOperation::Grunge)
+                        } else if sess_sel.contains("Lens Blur") {
+                            let lb = Text::new("Lens Blur radius (sigma > 0.0):").with_default("1.5").prompt().unwrap_or_else(|_| "1.5".into());
+                            let val = lb.parse::<f32>().unwrap_or(1.5);
+                            Some(SessionOperation::LensBlur(val))
+                        } else if sess_sel.contains("16:9 Smart Entropy Crop") {
+                            Some(SessionOperation::SmartCrop("16:9".to_string()))
+                        } else if sess_sel.contains("1:1 Square Smart Crop") {
+                            Some(SessionOperation::SmartCrop("1:1".to_string()))
+                        } else if sess_sel.contains("Text Watermark") {
+                            let t = Text::new("Watermark text:").with_default("© Pitu").prompt().unwrap_or_else(|_| "© Pitu".into());
+                            Some(SessionOperation::Watermark(t))
+                        } else if sess_sel.contains("Border Frame") {
+                            let border = Text::new("Border Frame thickness (px):").with_default("15").prompt().unwrap_or_else(|_| "15".into());
+                            let val = border.parse::<u32>().unwrap_or(15);
+                            Some(SessionOperation::Frame(val))
+                        } else {
+                            None
+                        };
+
+                        if let Some(operation) = op {
+                            // Apply operation
+                            match crate::versioning::apply_session_operation(&current_img, &operation) {
+                                Ok(new_img) => {
+                                    current_img = new_img;
+                                    // Auto-save: overwrite original file immediately!
+                                    let _ = current_img.save(input_path_obj);
+                                    // Auto-commit: create persistent history snapshot automatically!
+                                    let desc = operation.description();
+                                    let _ = create_snapshot(input_path_obj, &desc, Some(operation));
+                                    print_success(&format!("Successfully applied and auto-saved: {}", desc), false);
+                                }
+                                Err(e) => {
+                                    print_error(&format!("Error applying operation: {}", e), false);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -479,4 +616,142 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
             return Ok(());
         }
     }
+}
+
+pub fn run_interactive_rebase(image_path: &Path) -> anyhow::Result<()> {
+    crate::versioning::initialize_history_if_needed(image_path)?;
+    let history_dir = crate::versioning::get_history_dir(image_path);
+
+    loop {
+        let history = list_history(image_path);
+        if history.is_empty() {
+            println!("  No history commits found.");
+            return Ok(());
+        }
+
+        println!("\n  {}", style("🛠️  INTERACTIVE REBASE / OPERATION LAYER MANAGER").cyan().bold());
+        println!("  ───────────────────────────────────────────────────────────");
+        println!("  Original File: {}", style(image_path.display()).yellow());
+        println!("  Operations timeline:\n");
+
+        let mut choices = Vec::new();
+        for (idx, entry) in history.iter().enumerate() {
+            let status = if entry.enabled {
+                style("● active  ").green()
+            } else {
+                style("○ disabled").red()
+            };
+
+            let op_desc = if let Some(ref op) = entry.operation {
+                op.description()
+            } else {
+                entry.message.clone()
+            };
+
+            let label = format!(
+                "  [{}] {} - {} ({})",
+                idx,
+                status,
+                style(&op_desc).white().bold(),
+                style(&entry.hash).cyan()
+            );
+            choices.push(label);
+        }
+
+        choices.push("✅  Apply changes & Exit Rebase".to_string());
+        choices.push("❌  Discard & Exit".to_string());
+
+        let sel = Select::new("Select an operation index to toggle, or Apply/Exit:", choices).prompt()?;
+
+        if sel.contains("Apply changes") {
+            print_success("Rebase applied successfully!", false);
+            break;
+        }
+        if sel.contains("Discard") {
+            break;
+        }
+
+        if let Some(start) = sel.find('[') {
+            if let Some(end) = sel.find(']') {
+                let idx_str = &sel[start+1..end];
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    if idx == 0 {
+                        println!("  Cannot toggle the initial base snapshot commit!");
+                        continue;
+                    }
+                    let log_file = history_dir.join("history.json");
+                    let mut history = list_history(image_path);
+                    if idx < history.len() {
+                        history[idx].enabled = !history[idx].enabled;
+                        let updated_json = serde_json::to_string_pretty(&history)?;
+                        fs::write(&log_file, updated_json)?;
+                        
+                        match rebuild_image_from_history(image_path) {
+                            Ok(rebuilt) => {
+                                rebuilt.save(image_path)?;
+                                let base_img = image::open(&history[0].snapshot_file)?;
+                                print!("{}", render_side_by_side_diff(&base_img, &rebuilt));
+                                print_success(&format!("Toggled operation at index {}.", idx), false);
+                            }
+                            Err(e) => {
+                                print_error(&format!("Error rebuilding image: {}", e), false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn run_interactive_revert(image_path: &Path) -> anyhow::Result<()> {
+    let history = list_history(image_path);
+    if history.is_empty() {
+        println!("  No version snapshot history found for this image.");
+        return Ok(());
+    }
+
+    println!("\n  {}", style("↩️  REVERT IMAGE TO SNAPSHOT COMMIT").cyan().bold());
+    println!("  ───────────────────────────────────────────────────────────");
+
+    let mut choices = Vec::new();
+    for (idx, entry) in history.iter().enumerate() {
+        let label = format!(
+            "  [{}] {} - {} (hash: {})",
+            idx,
+            style(&entry.message).yellow(),
+            style(format!("{}s ago", entry.timestamp_sec)).dim(),
+            style(&entry.hash).cyan()
+        );
+        choices.push(label);
+    }
+    choices.push("❌  Cancel".to_string());
+
+    let sel = Select::new("Choose a snapshot commit to revert to:", choices).prompt()?;
+    if sel.contains("Cancel") {
+        return Ok(());
+    }
+
+    if let Some(start) = sel.find('[') {
+        if let Some(end) = sel.find(']') {
+            let idx_str = &sel[start+1..end];
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if let Some(entry) = history.get(idx) {
+                    let confirm = Confirm::new(&format!("Revert file back to snapshot [{}]?", entry.hash))
+                        .with_default(true)
+                        .prompt()
+                        .unwrap_or(false);
+
+                    if confirm {
+                        revert_to_commit(image_path, &entry.hash)?;
+                        print_success(&format!("Image successfully reverted to snapshot [{}]!", entry.hash), false);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

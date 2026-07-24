@@ -85,6 +85,21 @@ impl Pipeline {
             || args.contrast.is_some()
             || args.blur.is_some()
             || args.sharpen.is_some()
+            || args.warmth.is_some()
+            || args.vignette.is_some()
+            || args.structure.is_some()
+            || args.hdr_scape
+            || args.glamour_glow
+            || args.haze_removal
+            || args.frame_width.is_some()
+            || args.exposure.is_some()
+            || args.saturation.is_some()
+            || args.shadows.is_some()
+            || args.highlights.is_some()
+            || args.noir
+            || args.vintage
+            || args.grunge
+            || args.lens_blur.is_some()
         {
             pipeline.filter = Some(filter::FilterOptions {
                 grayscale: args.grayscale,
@@ -94,13 +109,21 @@ impl Pipeline {
                 contrast: args.contrast,
                 blur: args.blur,
                 sharpen: args.sharpen,
-                warmth: None,
-                vignette: None,
-                structure: None,
-                hdr_scape: false,
-                glamour_glow: false,
-                haze_removal: false,
-                frame_width: None,
+                warmth: args.warmth,
+                vignette: args.vignette,
+                structure: args.structure,
+                hdr_scape: args.hdr_scape,
+                glamour_glow: args.glamour_glow,
+                haze_removal: args.haze_removal,
+                frame_width: args.frame_width,
+                exposure: args.exposure,
+                saturation: args.saturation,
+                shadows: args.shadows,
+                highlights: args.highlights,
+                noir: args.noir,
+                vintage: args.vintage,
+                grunge: args.grunge,
+                lens_blur: args.lens_blur,
             });
         }
 
