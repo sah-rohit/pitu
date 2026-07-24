@@ -179,9 +179,13 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                 .unwrap_or(false);
 
             if do_sync {
-                let msg = Text::new("Commit Message:").with_default("Updated image snapshot").prompt().unwrap_or_else(|_| "Snapshot".into());
-                if let Ok(entry) = create_snapshot(input_path_obj, &msg, None) {
-                    print_success(&format!("Snapshot created! Hash: [{}]", entry.hash), false);
+                if let Ok(read_res) = load_universal_image(input_path_obj) {
+                    let msg = Text::new("Commit Message:").with_default("Updated image snapshot").prompt().unwrap_or_else(|_| "Snapshot".into());
+                    if let Ok(entry) = create_snapshot(input_path_obj, &read_res.image, &msg, None) {
+                        print_success(&format!("Snapshot created! Hash: [{}]", entry.hash), false);
+                    }
+                } else {
+                    print_error("Failed to load image for snapshot.", false);
                 }
             }
 
@@ -192,8 +196,17 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
         }
 
         if choice.contains("Interactive Rebase") {
-            if let Err(e) = run_interactive_rebase(input_path_obj) {
-                print_error(&format!("Rebase error: {}", e), false);
+            match run_interactive_rebase(input_path_obj) {
+                Ok(Some(rebuilt)) => {
+                    let _ = rebuilt.save(input_path_obj);
+                    print_success("Rebase applied and image updated on disk!", false);
+                }
+                Ok(None) => {
+                    print_success("Rebase exited without applying changes.", false);
+                }
+                Err(e) => {
+                    print_error(&format!("Rebase error: {}", e), false);
+                }
             }
             if !prompt_back_to_dashboard() {
                 return Ok(());
@@ -217,11 +230,11 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                 let _ = crate::versioning::initialize_history_if_needed(input_path_obj);
                 let history = list_history(input_path_obj);
                 
-                let mut current_img = read_res.image;
+                let mut current_img = rebuild_image_from_history(input_path_obj).unwrap_or_else(|_| read_res.image.clone());
                 let original_img = if !history.is_empty() {
-                    image::open(&history[0].snapshot_file).unwrap_or_else(|_| current_img.clone())
+                    image::open(&history[0].snapshot_file).unwrap_or_else(|_| read_res.image.clone())
                 } else {
-                    current_img.clone()
+                    read_res.image.clone()
                 };
 
                 loop {
@@ -296,7 +309,6 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                             let _ = fs::write(&log_file, serde_json::to_string_pretty(&history)?);
                             if let Ok(rebuilt) = rebuild_image_from_history(input_path_obj) {
                                 current_img = rebuilt;
-                                let _ = current_img.save(input_path_obj);
                                 print_success("Undid last adjustment persistently!", false);
                             }
                         }
@@ -309,13 +321,11 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                             let _ = fs::write(&log_file, serde_json::to_string_pretty(&history)?);
                             if let Ok(rebuilt) = rebuild_image_from_history(input_path_obj) {
                                 current_img = rebuilt;
-                                let _ = current_img.save(input_path_obj);
                                 print_success("Redid adjustment persistently!", false);
                             }
                         }
                     } else if sess_sel.contains("Interactive Rebase") {
-                        let _ = run_interactive_rebase(input_path_obj);
-                        if let Ok(rebuilt) = rebuild_image_from_history(input_path_obj) {
+                        if let Ok(Some(rebuilt)) = run_interactive_rebase(input_path_obj) {
                             current_img = rebuilt;
                         }
                     } else if sess_sel.contains("Finish") {
@@ -396,12 +406,10 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                             match crate::versioning::apply_session_operation(&current_img, &operation) {
                                 Ok(new_img) => {
                                     current_img = new_img;
-                                    // Auto-save: overwrite original file immediately!
-                                    let _ = current_img.save(input_path_obj);
                                     // Auto-commit: create persistent history snapshot automatically!
                                     let desc = operation.description();
-                                    let _ = create_snapshot(input_path_obj, &desc, Some(operation));
-                                    print_success(&format!("Successfully applied and auto-saved: {}", desc), false);
+                                    let _ = create_snapshot(input_path_obj, &current_img, &desc, Some(operation));
+                                    print_success(&format!("Successfully applied and auto-committed: {}", desc), false);
                                 }
                                 Err(e) => {
                                     print_error(&format!("Error applying operation: {}", e), false);
@@ -625,24 +633,27 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
     }
 }
 
-pub fn run_interactive_rebase(image_path: &Path) -> anyhow::Result<()> {
+pub fn run_interactive_rebase(image_path: &Path) -> anyhow::Result<Option<DynamicImage>> {
     crate::versioning::initialize_history_if_needed(image_path)?;
     let history_dir = crate::versioning::get_history_dir(image_path);
+    let log_file = history_dir.join("history.json");
+
+    let original_history = list_history(image_path);
+    if original_history.is_empty() {
+        println!("  No history commits found.");
+        return Ok(None);
+    }
+
+    let mut working_history = original_history.clone();
 
     loop {
-        let history = list_history(image_path);
-        if history.is_empty() {
-            println!("  No history commits found.");
-            return Ok(());
-        }
-
         println!("\n  {}", style("🛠️  INTERACTIVE REBASE / OPERATION LAYER MANAGER").cyan().bold());
         println!("  ───────────────────────────────────────────────────────────");
         println!("  Original File: {}", style(image_path.display()).yellow());
         println!("  Operations timeline:\n");
 
         let mut choices = Vec::new();
-        for (idx, entry) in history.iter().enumerate() {
+        for (idx, entry) in working_history.iter().enumerate() {
             let status = if entry.enabled {
                 style("● active  ").green()
             } else {
@@ -671,11 +682,17 @@ pub fn run_interactive_rebase(image_path: &Path) -> anyhow::Result<()> {
         let sel = Select::new("Select an operation index to toggle, or Apply/Exit:", choices).prompt()?;
 
         if sel.contains("Apply changes") {
+            let updated_json = serde_json::to_string_pretty(&working_history)?;
+            fs::write(&log_file, updated_json)?;
+            
+            let rebuilt = rebuild_image_from_history_list(&working_history)?;
+            let _ = crate::versioning::create_snapshot(image_path, &rebuilt, "Interactive Rebase Outcome", None)?;
+            
             print_success("Rebase applied successfully!", false);
-            break;
+            return Ok(Some(rebuilt));
         }
         if sel.contains("Discard") {
-            break;
+            return Ok(None);
         }
 
         if let Some(start) = sel.find('[') {
@@ -686,17 +703,12 @@ pub fn run_interactive_rebase(image_path: &Path) -> anyhow::Result<()> {
                         println!("  Cannot toggle the initial base snapshot commit!");
                         continue;
                     }
-                    let log_file = history_dir.join("history.json");
-                    let mut history = list_history(image_path);
-                    if idx < history.len() {
-                        history[idx].enabled = !history[idx].enabled;
-                        let updated_json = serde_json::to_string_pretty(&history)?;
-                        fs::write(&log_file, updated_json)?;
+                    if idx < working_history.len() {
+                        working_history[idx].enabled = !working_history[idx].enabled;
                         
-                        match rebuild_image_from_history(image_path) {
+                        match rebuild_image_from_history_list(&working_history) {
                             Ok(rebuilt) => {
-                                rebuilt.save(image_path)?;
-                                let base_img = image::open(&history[0].snapshot_file)?;
+                                let base_img = image::open(&working_history[0].snapshot_file)?;
                                 print!("{}", render_side_by_side_diff(&base_img, &rebuilt));
                                 print_success(&format!("Toggled operation at index {}.", idx), false);
                             }
@@ -709,8 +721,22 @@ pub fn run_interactive_rebase(image_path: &Path) -> anyhow::Result<()> {
             }
         }
     }
+}
 
-    Ok(())
+fn rebuild_image_from_history_list(history: &[crate::versioning::SnapshotEntry]) -> anyhow::Result<DynamicImage> {
+    if history.is_empty() {
+        anyhow::bail!("History is empty");
+    }
+    let base_entry = &history[0];
+    let mut img = image::open(&base_entry.snapshot_file)?;
+    for entry in history.iter().skip(1) {
+        if entry.enabled {
+            if let Some(ref op) = entry.operation {
+                img = crate::versioning::apply_session_operation(&img, op)?;
+            }
+        }
+    }
+    Ok(img)
 }
 
 pub fn run_interactive_revert(image_path: &Path) -> anyhow::Result<()> {
@@ -752,7 +778,8 @@ pub fn run_interactive_revert(image_path: &Path) -> anyhow::Result<()> {
                         .unwrap_or(false);
 
                     if confirm {
-                        revert_to_commit(image_path, &entry.hash)?;
+                        let img = revert_to_commit(image_path, &entry.hash)?;
+                        img.save(image_path)?;
                         print_success(&format!("Image successfully reverted to snapshot [{}]!", entry.hash), false);
                     }
                 }

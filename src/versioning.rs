@@ -290,7 +290,12 @@ pub fn apply_session_operation(img: &DynamicImage, op: &SessionOperation) -> any
     }
 }
 
-pub fn create_snapshot(image_path: &Path, message: &str, operation: Option<SessionOperation>) -> anyhow::Result<SnapshotEntry> {
+pub fn create_snapshot(
+    image_path: &Path,
+    img: &DynamicImage,
+    message: &str,
+    operation: Option<SessionOperation>,
+) -> anyhow::Result<SnapshotEntry> {
     initialize_history_if_needed(image_path)?;
 
     let history_dir = get_history_dir(image_path);
@@ -308,10 +313,7 @@ pub fn create_snapshot(image_path: &Path, message: &str, operation: Option<Sessi
     let snapshot_filename = format!("{}_{}.webp", file_stem, hash);
     let snapshot_target = history_dir.join(&snapshot_filename);
 
-    if image_path.exists() {
-        let img = image::open(image_path)?;
-        let _ = img.save_with_format(&snapshot_target, image::ImageFormat::WebP);
-    }
+    let _ = img.save_with_format(&snapshot_target, image::ImageFormat::WebP);
 
     let entry = SnapshotEntry {
         hash: hash.clone(),
@@ -393,7 +395,7 @@ pub fn rebuild_image_from_history(image_path: &Path) -> anyhow::Result<DynamicIm
     Ok(img)
 }
 
-pub fn rebase_history(image_path: &Path, indexes_to_disable: &[usize]) -> anyhow::Result<()> {
+pub fn rebase_history(image_path: &Path, indexes_to_disable: &[usize]) -> anyhow::Result<DynamicImage> {
     initialize_history_if_needed(image_path)?;
     let history_dir = get_history_dir(image_path);
     let log_file = history_dir.join("history.json");
@@ -414,15 +416,14 @@ pub fn rebase_history(image_path: &Path, indexes_to_disable: &[usize]) -> anyhow
 
     // Rebuild final image
     let rebuilt_img = rebuild_image_from_history(image_path)?;
-    rebuilt_img.save(image_path)?;
 
     // Save snapshot of the rebase outcome
-    let _ = create_snapshot(image_path, "Interactive Rebase Outcome", None)?;
+    let _ = create_snapshot(image_path, &rebuilt_img, "Interactive Rebase Outcome", None)?;
 
-    Ok(())
+    Ok(rebuilt_img)
 }
 
-pub fn revert_to_commit(image_path: &Path, commit_ref: &str) -> anyhow::Result<()> {
+pub fn revert_to_commit(image_path: &Path, commit_ref: &str) -> anyhow::Result<DynamicImage> {
     initialize_history_if_needed(image_path)?;
     let history_dir = get_history_dir(image_path);
     let log_file = history_dir.join("history.json");
@@ -441,9 +442,8 @@ pub fn revert_to_commit(image_path: &Path, commit_ref: &str) -> anyhow::Result<(
 
     if let Some(entry) = found_entry {
         let img = image::open(&entry.snapshot_file)?;
-        img.save(image_path)?;
-        let _ = create_snapshot(image_path, &format!("Reverted to snapshot [{}]", entry.hash), None)?;
-        Ok(())
+        let _ = create_snapshot(image_path, &img, &format!("Reverted to snapshot [{}]", entry.hash), None)?;
+        Ok(img)
     } else {
         anyhow::bail!("Snapshot commit reference '{}' not found.", commit_ref)
     }

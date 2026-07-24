@@ -3,7 +3,7 @@
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "📷 Building/Installing pitu CLI Image Workbench on Windows..." -ForegroundColor Cyan
+Write-Host "Building/Installing pitu CLI Image Workbench on Windows..." -ForegroundColor Cyan
 
 $InstallDir = "$env:USERPROFILE\.local\bin"
 if (-not (Test-Path $InstallDir)) {
@@ -14,7 +14,7 @@ $ExeTarget = Join-Path $InstallDir "pitu.exe"
 
 # If cargo is installed, build release binary
 if (Get-Command cargo -ErrorAction SilentlyContinue) {
-    Write-Host "⚡ Compiling release binary with Cargo..." -ForegroundColor Yellow
+    Write-Host "Compiling release binary with Cargo..." -ForegroundColor Yellow
     cargo build --release
     Copy-Item ".\target\release\pitu.exe" -Destination $ExeTarget -Force
 } else {
@@ -25,9 +25,9 @@ if (Get-Command cargo -ErrorAction SilentlyContinue) {
 # Ensure InstallDir is in User PATH
 $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($UserPath -notlike "*$InstallDir*") {
-    Write-Host "⚙️ Adding $InstallDir to User PATH Environment Variable..." -ForegroundColor Yellow
+    Write-Host "Adding $InstallDir to User PATH Environment Variable..." -ForegroundColor Yellow
     [Environment]::SetEnvironmentVariable("PATH", "$UserPath;$InstallDir", "User")
     $env:PATH = "$env:PATH;$InstallDir"
 }
 
-Write-Host "✨ Installation Complete! Restart your terminal and run 'pitu'." -ForegroundColor Green
+Write-Host "Installation Complete! Restart your terminal and run 'pitu'." -ForegroundColor Green

@@ -46,7 +46,9 @@ fn main() -> anyhow::Result<()> {
             return create_default_config_file();
         }
         Some(Commands::Sync { ref file, ref message }) => {
-            let entry = create_snapshot(Path::new(file), message, None)?;
+            let path = Path::new(file);
+            let img = image::open(path)?;
+            let entry = create_snapshot(path, &img, message, None)?;
             print_success(
                 &format!("Snapshot commit created! Hash: [{}]", entry.hash),
                 false,
@@ -54,10 +56,21 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some(Commands::Rebase { ref file }) => {
-            return run_interactive_rebase(Path::new(file));
+            let path = Path::new(file);
+            if let Some(rebuilt) = run_interactive_rebase(path)? {
+                rebuilt.save(path)?;
+                print_success("Interactive rebase applied and changes written to disk!", false);
+            } else {
+                print_success("Interactive rebase exited without changes.", false);
+            }
+            return Ok(());
         }
         Some(Commands::Revert { ref file, ref commit }) => {
-            return revert_to_commit(Path::new(file), commit);
+            let path = Path::new(file);
+            let img = revert_to_commit(path, commit)?;
+            img.save(path)?;
+            print_success(&format!("Reverted to snapshot [{}]", commit), false);
+            return Ok(());
         }
         Some(Commands::History { ref file }) => {
             let history = list_history(Path::new(file));
