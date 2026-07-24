@@ -37,6 +37,9 @@ pub enum SessionOperation {
     Vintage,
     Grunge,
     LensBlur(f32),
+    Healing(u32, u32, u32), // cx, cy, r
+    Selective(u32, u32, u32, f32, f32), // cx, cy, r, exp, sat
+    DoubleExposure(String, String), // second_path, mode
 }
 
 impl SessionOperation {
@@ -67,6 +70,9 @@ impl SessionOperation {
             Self::Vintage => "Vintage filter".to_string(),
             Self::Grunge => "Grunge filter".to_string(),
             Self::LensBlur(lb) => format!("Lens Blur ({:.2})", lb),
+            Self::Healing(cx, cy, r) => format!("Spot Healing at ({}, {}) r:{}", cx, cy, r),
+            Self::Selective(cx, cy, r, exp, sat) => format!("Selective Mask at ({}, {}) r:{} exp:{:.1} sat:{:.1}", cx, cy, r, exp, sat),
+            Self::DoubleExposure(path, mode) => format!("Double Exposure '{}' ({})", path, mode),
         }
     }
 }
@@ -234,6 +240,22 @@ pub fn apply_session_operation(img: &DynamicImage, op: &SessionOperation) -> any
             let fopts = FilterOptions { lens_blur: Some(*lb), ..Default::default() };
             Ok(apply_filters(img, &fopts))
         }
+        SessionOperation::Healing(cx, cy, r) => {
+            let fopts = FilterOptions { healing: Some((*cx, *cy, *r)), ..Default::default() };
+            Ok(apply_filters(img, &fopts))
+        }
+        SessionOperation::Selective(cx, cy, r, exp, sat) => {
+            let fopts = FilterOptions { selective: Some((*cx, *cy, *r, *exp, *sat)), ..Default::default() };
+            Ok(apply_filters(img, &fopts))
+        }
+        SessionOperation::DoubleExposure(path, mode) => {
+            let fopts = FilterOptions {
+                double_exposure_path: Some(PathBuf::from(path)),
+                double_exposure_mode: Some(mode.clone()),
+                ..Default::default()
+            };
+            Ok(apply_filters(img, &fopts))
+        }
     }
 }
 
@@ -279,6 +301,32 @@ pub fn create_snapshot(image_path: &Path, message: &str, operation: Option<Sessi
     history.push(entry.clone());
     let updated_json = serde_json::to_string_pretty(&history)?;
     fs::write(log_file, updated_json)?;
+
+    // Optional local Git sync: if image_path is inside a git repo, stage and commit!
+    let parent = image_path.parent().unwrap_or_else(|| Path::new("."));
+    let is_git_repo = std::process::Command::new("git")
+        .args(&["rev-parse", "--is-inside-work-tree"])
+        .current_dir(parent)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if is_git_repo {
+        // Stage the modified image file
+        let _ = std::process::Command::new("git")
+            .args(&["add", image_path.to_str().unwrap_or_default()])
+            .current_dir(parent)
+            .status();
+
+        // Commit with the operation message
+        let commit_msg = format!("pitu: {}", message);
+        let _ = std::process::Command::new("git")
+            .args(&["commit", "-m", &commit_msg])
+            .current_dir(parent)
+            .status();
+    }
 
     Ok(entry)
 }

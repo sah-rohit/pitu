@@ -1,4 +1,5 @@
 use image::{DynamicImage, ImageBuffer, Rgba};
+use std::path::PathBuf;
 
 pub struct FilterOptions {
     pub grayscale: bool,
@@ -24,6 +25,11 @@ pub struct FilterOptions {
     pub vintage: bool,
     pub grunge: bool,
     pub lens_blur: Option<f32>,
+    // Holy Grail tools
+    pub healing: Option<(u32, u32, u32)>, // cx, cy, radius
+    pub selective: Option<(u32, u32, u32, f32, f32)>, // cx, cy, radius, exposure_delta, saturation_delta
+    pub double_exposure_path: Option<PathBuf>,
+    pub double_exposure_mode: Option<String>,
 }
 
 impl Default for FilterOptions {
@@ -51,6 +57,10 @@ impl Default for FilterOptions {
             vintage: false,
             grunge: false,
             lens_blur: None,
+            healing: None,
+            selective: None,
+            double_exposure_path: None,
+            double_exposure_mode: None,
         }
     }
 }
@@ -159,6 +169,20 @@ pub fn apply_filters(img: &DynamicImage, opts: &FilterOptions) -> DynamicImage {
     if let Some(lb) = opts.lens_blur {
         if lb > 0.05 {
             result = apply_lens_blur(&result, lb);
+        }
+    }
+
+    if let Some((cx, cy, r)) = opts.healing {
+        result = apply_healing(&result, cx, cy, r);
+    }
+
+    if let Some((cx, cy, r, exp, sat)) = opts.selective {
+        result = apply_selective(&result, cx, cy, r, exp, sat);
+    }
+
+    if let Some(ref path) = opts.double_exposure_path {
+        if let Some(ref mode) = opts.double_exposure_mode {
+            result = apply_double_exposure(&result, path, mode);
         }
     }
 
@@ -403,4 +427,136 @@ fn apply_grunge(img: &DynamicImage) -> DynamicImage {
 
 fn apply_lens_blur(img: &DynamicImage, strength: f32) -> DynamicImage {
     img.blur(strength * 3.5)
+}
+
+fn apply_healing(img: &DynamicImage, cx: u32, cy: u32, r: u32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    if cx >= w || cy >= h || r == 0 {
+        return img.clone();
+    }
+
+    let mut r_sum = 0.0;
+    let mut g_sum = 0.0;
+    let mut b_sum = 0.0;
+    let mut count = 0.0;
+    
+    let sample_r = r + 2;
+    for angle_deg in (0..360).step_by(10) {
+        let rad = (angle_deg as f32).to_radians();
+        let sx = (cx as f32 + sample_r as f32 * rad.cos()).round() as i32;
+        let sy = (cy as f32 + sample_r as f32 * rad.sin()).round() as i32;
+        if sx >= 0 && sx < w as i32 && sy >= 0 && sy < h as i32 {
+            let p = rgba.get_pixel(sx as u32, sy as u32);
+            r_sum += p[0] as f64;
+            g_sum += p[1] as f64;
+            b_sum += p[2] as f64;
+            count += 1.0;
+        }
+    }
+
+    if count == 0.0 {
+        return img.clone();
+    }
+    
+    let avg_r = r_sum / count;
+    let avg_g = g_sum / count;
+    let avg_b = b_sum / count;
+
+    let r_f = r as f32;
+    for y in cy.saturating_sub(r)..=(cy + r).min(h - 1) {
+        for x in cx.saturating_sub(r)..=(cx + r).min(w - 1) {
+            let dx = x as f32 - cx as f32;
+            let dy = y as f32 - cy as f32;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist <= r_f {
+                let p = rgba.get_pixel_mut(x, y);
+                let w = (1.0 - dist / r_f).clamp(0.0, 1.0) as f64;
+                p[0] = (p[0] as f64 * (1.0 - w) + avg_r * w).clamp(0.0, 255.0) as u8;
+                p[1] = (p[1] as f64 * (1.0 - w) + avg_g * w).clamp(0.0, 255.0) as u8;
+                p[2] = (p[2] as f64 * (1.0 - w) + avg_b * w).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_selective(img: &DynamicImage, cx: u32, cy: u32, r: u32, exp: f32, sat: f32) -> DynamicImage {
+    let mut rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let r_f = r as f32;
+    if cx >= w || cy >= h || r == 0 {
+        return img.clone();
+    }
+
+    let exp_multiplier = 2.0f32.powf(exp);
+
+    for y in cy.saturating_sub(r)..=(cy + r).min(h - 1) {
+        for x in cx.saturating_sub(r)..=(cx + r).min(w - 1) {
+            let dx = x as f32 - cx as f32;
+            let dy = y as f32 - cy as f32;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist <= r_f {
+                let p = rgba.get_pixel_mut(x, y);
+                let w = (1.0 - (dist / r_f).powi(2)).clamp(0.0, 1.0);
+                
+                let local_exp = 1.0 + (exp_multiplier - 1.0) * w;
+                let mut pr = p[0] as f32 * local_exp;
+                let mut pg = p[1] as f32 * local_exp;
+                let mut pb = p[2] as f32 * local_exp;
+
+                let gray = 0.299 * pr + 0.587 * pg + 0.114 * pb;
+                let local_sat = 1.0 + (sat - 1.0) * w;
+                pr = gray + (pr - gray) * local_sat;
+                pg = gray + (pg - gray) * local_sat;
+                pb = gray + (pb - gray) * local_sat;
+
+                p[0] = pr.clamp(0.0, 255.0) as u8;
+                p[1] = pg.clamp(0.0, 255.0) as u8;
+                p[2] = pb.clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn apply_double_exposure(img: &DynamicImage, second_path: &std::path::Path, mode: &str) -> DynamicImage {
+    let second_img = match image::open(second_path) {
+        Ok(i) => i,
+        Err(_) => return img.clone(),
+    };
+
+    let mut rgba1 = img.to_rgba8();
+    let (w, h) = rgba1.dimensions();
+    let second_resized = second_img.resize_exact(w, h, image::imageops::FilterType::Triangle);
+    let rgba2 = second_resized.to_rgba8();
+
+    for y in 0..h {
+        for x in 0..w {
+            let p1 = rgba1.get_pixel_mut(x, y);
+            let p2 = rgba2.get_pixel(x, y);
+            for c in 0..3 {
+                let v1 = p1[c] as f32;
+                let v2 = p2[c] as f32;
+                let val = match mode {
+                    "multiply" => (v1 * v2) / 255.0,
+                    "screen" => 255.0 - ((255.0 - v1) * (255.0 - v2)) / 255.0,
+                    "overlay" => {
+                        if v1 < 128.0 {
+                            (2.0 * v1 * v2) / 255.0
+                        } else {
+                            255.0 - 2.0 * (255.0 - v1) * (255.0 - v2) / 255.0
+                        }
+                    }
+                    "add" => v1 + v2,
+                    _ => v1,
+                };
+                p1[c] = val.clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    DynamicImage::ImageRgba8(rgba1)
 }

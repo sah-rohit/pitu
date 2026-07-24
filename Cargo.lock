@@ -1225,6 +1225,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "console",
+ "crossterm",
  "env_logger",
  "glob",
  "image",

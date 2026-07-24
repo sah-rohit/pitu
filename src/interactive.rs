@@ -8,6 +8,7 @@ use crate::ui::ascii_preview::{render_preview_cmd, render_side_by_side_diff};
 use crate::ui::banner::{print_footer_hints, print_header_banner, print_welcome_dashboard};
 use crate::ui::exporter::{compute_target_path, post_save_action_prompt, prompt_save_options};
 use crate::ui::inspect::render_image_inspector;
+use image::{DynamicImage, GenericImageView};
 use crate::utils::{print_error, print_info, print_success};
 use crate::versioning::{
     create_snapshot, list_history, rebuild_image_from_history, revert_to_commit, SessionOperation,
@@ -256,6 +257,9 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                         "🎞️ Vintage Classic Film Tint",
                         "🎸 Grunge Scratchy Grain",
                         "👁️ Lens Blur / Bokeh Focus",
+                        "🩹 Spot Healing / Blemish Removal",
+                        "🎯 Selective Adjustment Circle",
+                        "🎭 Double Exposure Blending",
                         "🧠 16:9 Smart Entropy Crop",
                         "📱 1:1 Square Smart Crop",
                         "🏷️ Text Watermark Overlay",
@@ -326,25 +330,15 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                     } else {
                         // Parse operation
                         let op = if sess_sel.contains("Exposure") {
-                            let exp = Text::new("Exposure offset (-3.0 to 3.0):").with_default("0.5").prompt().unwrap_or_else(|_| "0.5".into());
-                            let val = exp.parse::<f32>().unwrap_or(0.5);
-                            Some(SessionOperation::Exposure(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Exposure(v), "Exposure offset", 0.0, 0.05, -3.0, 3.0)
                         } else if sess_sel.contains("Saturation") {
-                            let sat = Text::new("Saturation multiplier (0.0 to 2.5):").with_default("1.2").prompt().unwrap_or_else(|_| "1.2".into());
-                            let val = sat.parse::<f32>().unwrap_or(1.2);
-                            Some(SessionOperation::Saturation(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Saturation(v), "Saturation multiplier", 1.0, 0.05, 0.0, 3.0)
                         } else if sess_sel.contains("Warmth") {
-                            let w = Text::new("Color Warmth (-1.0 cool to 1.0 warm):").with_default("0.25").prompt().unwrap_or_else(|_| "0.25".into());
-                            let val = w.parse::<f32>().unwrap_or(0.25);
-                            Some(SessionOperation::Warmth(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Warmth(v), "Color Warmth", 0.0, 0.05, -1.0, 1.0)
                         } else if sess_sel.contains("Structure") {
-                            let s = Text::new("Structure / Micro-contrast (0.0 to 3.0):").with_default("1.0").prompt().unwrap_or_else(|_| "1.0".into());
-                            let val = s.parse::<f32>().unwrap_or(1.0);
-                            Some(SessionOperation::Structure(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Structure(v), "Structure / Micro-contrast", 0.0, 0.05, 0.0, 3.0)
                         } else if sess_sel.contains("Vignette") {
-                            let v = Text::new("Vignette strength (0.0 to 1.5):").with_default("0.5").prompt().unwrap_or_else(|_| "0.5".into());
-                            let val = v.parse::<f32>().unwrap_or(0.5);
-                            Some(SessionOperation::Vignette(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Vignette(v), "Vignette strength", 0.0, 0.05, 0.0, 1.5)
                         } else if sess_sel.contains("HDR Scape") {
                             Some(SessionOperation::HdrScape)
                         } else if sess_sel.contains("Glamour") {
@@ -352,13 +346,9 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                         } else if sess_sel.contains("Haze Removal") {
                             Some(SessionOperation::HazeRemoval)
                         } else if sess_sel.contains("Shadows") {
-                            let sh = Text::new("Shadows level (-1.0 to 1.0):").with_default("0.3").prompt().unwrap_or_else(|_| "0.3".into());
-                            let val = sh.parse::<f32>().unwrap_or(0.3);
-                            Some(SessionOperation::Shadows(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Shadows(v), "Shadows level", 0.0, 0.05, -1.0, 1.0)
                         } else if sess_sel.contains("Highlights") {
-                            let hi = Text::new("Highlights level (-1.0 to 1.0):").with_default("-0.2").prompt().unwrap_or_else(|_| "-0.2".into());
-                            let val = hi.parse::<f32>().unwrap_or(-0.2);
-                            Some(SessionOperation::Highlights(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Highlights(v), "Highlights level", 0.0, 0.05, -1.0, 1.0)
                         } else if sess_sel.contains("Noir") {
                             Some(SessionOperation::Noir)
                         } else if sess_sel.contains("Vintage") {
@@ -366,9 +356,22 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                         } else if sess_sel.contains("Grunge") {
                             Some(SessionOperation::Grunge)
                         } else if sess_sel.contains("Lens Blur") {
-                            let lb = Text::new("Lens Blur radius (sigma > 0.0):").with_default("1.5").prompt().unwrap_or_else(|_| "1.5".into());
-                            let val = lb.parse::<f32>().unwrap_or(1.5);
-                            Some(SessionOperation::LensBlur(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::LensBlur(v), "Lens Blur radius", 0.0, 0.05, 0.0, 5.0)
+                        } else if sess_sel.contains("Spot Healing") {
+                            let (w, h) = current_img.dimensions();
+                            tune_healing_tui(&original_img, &current_img, w / 2, h / 2, 20)
+                        } else if sess_sel.contains("Selective Adjustment") {
+                            let (w, h) = current_img.dimensions();
+                            tune_selective_tui(&original_img, &current_img, w / 2, h / 2, 50, 0.0, 1.0)
+                        } else if sess_sel.contains("Double Exposure") {
+                            let path_str = Text::new("Path to secondary image file to blend:").prompt().unwrap_or_default();
+                            if std::path::Path::new(&path_str).exists() {
+                                let mode = Select::new("Choose blend mode:", vec!["multiply", "screen", "overlay", "add"]).prompt().unwrap_or_else(|_| "overlay".into());
+                                Some(SessionOperation::DoubleExposure(path_str, mode.to_string()))
+                            } else {
+                                print_error("File does not exist. Double exposure cancelled.", false);
+                                None
+                            }
                         } else if sess_sel.contains("16:9 Smart Entropy Crop") {
                             Some(SessionOperation::SmartCrop("16:9".to_string()))
                         } else if sess_sel.contains("1:1 Square Smart Crop") {
@@ -377,9 +380,7 @@ pub fn run_interactive_wizard() -> anyhow::Result<()> {
                             let t = Text::new("Watermark text:").with_default("© Pitu").prompt().unwrap_or_else(|_| "© Pitu".into());
                             Some(SessionOperation::Watermark(t))
                         } else if sess_sel.contains("Border Frame") {
-                            let border = Text::new("Border Frame thickness (px):").with_default("15").prompt().unwrap_or_else(|_| "15".into());
-                            let val = border.parse::<u32>().unwrap_or(15);
-                            Some(SessionOperation::Frame(val))
+                            tune_parameter_tui(&original_img, &current_img, &|v| SessionOperation::Frame(v as u32), "Border Frame width", 15.0, 1.0, 0.0, 100.0)
                         } else {
                             None
                         };
@@ -754,4 +755,260 @@ pub fn run_interactive_revert(image_path: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+use crossterm::event::{self, Event, KeyCode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crate::utils::{calculate_entropy, calculate_ssim};
+
+fn tune_parameter_tui(
+    original_img: &DynamicImage,
+    pre_slide_img: &DynamicImage,
+    op_generator: &dyn Fn(f32) -> SessionOperation,
+    param_name: &str,
+    mut current_val: f32,
+    step: f32,
+    min_val: f32,
+    max_val: f32,
+) -> Option<SessionOperation> {
+    if let Err(_) = enable_raw_mode() {
+        return None;
+    }
+
+    let mut result_op = None;
+
+    loop {
+        let op = op_generator(current_val);
+        let preview_img = match crate::versioning::apply_session_operation(pre_slide_img, &op) {
+            Ok(img) => img,
+            Err(_) => pre_slide_img.clone(),
+        };
+
+        print!("\x1b[2J\x1b[H");
+        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+
+        let pct = ((current_val - min_val) / (max_val - min_val)).clamp(0.0, 1.0);
+        let pos = (pct * 20.0).round() as usize;
+        let mut slider_bar = String::new();
+        for i in 0..=20 {
+            if i == pos {
+                slider_bar.push('■');
+            } else {
+                slider_bar.push('─');
+            }
+        }
+
+        let ssim = calculate_ssim(original_img, &preview_img);
+        let ent_orig = calculate_entropy(original_img);
+        let ent_proc = calculate_entropy(&preview_img);
+
+        println!("  🎛️  Tuning Parameter: {}", style(param_name).cyan().bold());
+        println!("  Value: [{:.2}]  {}", current_val, style(slider_bar).yellow());
+        println!(
+            "  📊 SSIM: {:.3} | Entropy: {:.2} (orig: {:.2})",
+            ssim, ent_proc, ent_orig
+        );
+        println!("  Controls: [Left/Right] adjust, [Up/Down] fast adjust, [Enter] commit, [Esc] cancel");
+
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                match key_event.code {
+                    KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('-') => {
+                        current_val = (current_val - step).max(min_val);
+                    }
+                    KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('+') => {
+                        current_val = (current_val + step).min(max_val);
+                    }
+                    KeyCode::Up | KeyCode::Char('w') => {
+                        current_val = (current_val + step * 5.0).min(max_val);
+                    }
+                    KeyCode::Down | KeyCode::Char('s') => {
+                        current_val = (current_val - step * 5.0).max(min_val);
+                    }
+                    KeyCode::Enter => {
+                        result_op = Some(op);
+                        break;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = disable_raw_mode();
+    result_op
+}
+
+fn tune_healing_tui(
+    original_img: &DynamicImage,
+    pre_slide_img: &DynamicImage,
+    mut cx: u32,
+    mut cy: u32,
+    mut r: u32,
+) -> Option<SessionOperation> {
+    if let Err(_) = enable_raw_mode() {
+        return None;
+    }
+    let mut result_op = None;
+    let (w, h) = pre_slide_img.dimensions();
+
+    loop {
+        let op = SessionOperation::Healing(cx, cy, r);
+        let preview_img = match crate::versioning::apply_session_operation(pre_slide_img, &op) {
+            Ok(img) => img,
+            Err(_) => pre_slide_img.clone(),
+        };
+
+        print!("\x1b[2J\x1b[H");
+        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+        println!("  🩹 Spot Healing at Center: ({}, {}), Radius: {}", cx, cy, r);
+        println!("  Controls: [Left/Right/Up/Down] move spot, [+/-] change radius, [Enter] commit, [Esc] cancel");
+
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                match key_event.code {
+                    KeyCode::Left | KeyCode::Char('a') => {
+                        cx = cx.saturating_sub(10).max(0);
+                    }
+                    KeyCode::Right | KeyCode::Char('d') => {
+                        cx = (cx + 10).min(w - 1);
+                    }
+                    KeyCode::Up | KeyCode::Char('w') => {
+                        cy = cy.saturating_sub(10).max(0);
+                    }
+                    KeyCode::Down | KeyCode::Char('s') => {
+                        cy = (cy + 10).min(h - 1);
+                    }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        r = (r + 2).min(200);
+                    }
+                    KeyCode::Char('-') | KeyCode::Char('_') => {
+                        r = r.saturating_sub(2).max(1);
+                    }
+                    KeyCode::Enter => {
+                        result_op = Some(op);
+                        break;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = disable_raw_mode();
+    result_op
+}
+
+fn tune_selective_tui(
+    original_img: &DynamicImage,
+    pre_slide_img: &DynamicImage,
+    mut cx: u32,
+    mut cy: u32,
+    mut r: u32,
+    mut exp: f32,
+    mut sat: f32,
+) -> Option<SessionOperation> {
+    if let Err(_) = enable_raw_mode() {
+        return None;
+    }
+    let mut result_op = None;
+    let (w, h) = pre_slide_img.dimensions();
+    let mut active_field = 0; // 0: Position, 1: Radius, 2: Exposure, 3: Saturation
+
+    loop {
+        let op = SessionOperation::Selective(cx, cy, r, exp, sat);
+        let preview_img = match crate::versioning::apply_session_operation(pre_slide_img, &op) {
+            Ok(img) => img,
+            Err(_) => pre_slide_img.clone(),
+        };
+
+        print!("\x1b[2J\x1b[H");
+        print!("{}", render_side_by_side_diff(original_img, &preview_img));
+
+        println!("\n  🎯 Selective Radial Masking");
+        println!("  ────────────────────────────");
+        
+        let fields = [
+            format!("Center coordinates: ({}, {})", cx, cy),
+            format!("Mask Radius: {}px", r),
+            format!("Local Exposure: {:.2}", exp),
+            format!("Local Saturation: {:.2}", sat),
+        ];
+
+        for (i, f) in fields.iter().enumerate() {
+            if i == active_field {
+                println!("  {} {}", style("▶").cyan().bold(), style(f).white().bold());
+            } else {
+                println!("    {}", style(f).dim());
+            }
+        }
+
+        println!("\n  Controls: [Tab] switch field, [Left/Right/Up/Down] adjust active, [Enter] commit, [Esc] cancel");
+
+        match event::read() {
+            Ok(Event::Key(key_event)) => {
+                match key_event.code {
+                    KeyCode::Tab => {
+                        active_field = (active_field + 1) % 4;
+                    }
+                    KeyCode::Left | KeyCode::Char('a') => {
+                        match active_field {
+                            0 => cx = cx.saturating_sub(15).max(0),
+                            1 => r = r.saturating_sub(5).max(5),
+                            2 => exp = (exp - 0.1).max(-3.0),
+                            3 => sat = (sat - 0.1).max(0.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('d') => {
+                        match active_field {
+                            0 => cx = (cx + 15).min(w - 1),
+                            1 => r = (r + 5).min(500),
+                            2 => exp = (exp + 0.1).min(3.0),
+                            3 => sat = (sat + 0.1).min(3.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('w') => {
+                        match active_field {
+                            0 => cy = cy.saturating_sub(15).max(0),
+                            1 => r = (r + 15).min(500),
+                            2 => exp = (exp + 0.3).min(3.0),
+                            3 => sat = (sat + 0.3).min(3.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('s') => {
+                        match active_field {
+                            0 => cy = (cy + 15).min(h - 1),
+                            1 => r = r.saturating_sub(15).max(5),
+                            2 => exp = (exp - 0.3).max(-3.0),
+                            3 => sat = (sat - 0.3).max(0.0),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Enter => {
+                        result_op = Some(op);
+                        break;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = disable_raw_mode();
+    result_op
 }

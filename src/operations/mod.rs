@@ -124,6 +124,7 @@ impl Pipeline {
                 vintage: args.vintage,
                 grunge: args.grunge,
                 lens_blur: args.lens_blur,
+                ..Default::default()
             });
         }
 
